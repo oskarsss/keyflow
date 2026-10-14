@@ -1103,6 +1103,8 @@ class MainActivity : Activity() {
                 .apply { inputType = InputType.TYPE_CLASS_NUMBER }
         add(form, preload)
         space(form, 12)
+        add(form, button("Update music downloader", false, ::updateDownloader))
+        space(form, 12)
         add(
             form,
             button("Clear offline song cache", false) {
