@@ -299,27 +299,19 @@ class GamePlayTest {
     @Test
     fun playCachedPlaylistTrackAndExerciseFailure() {
         val arguments = InstrumentationRegistry.getArguments()
-        val token = arguments.getString("companionToken")
-        val playlistId = arguments.getString("playlistId")
-        assumeTrue(
-            "Optional live companion test",
-            !token.isNullOrBlank() && !playlistId.isNullOrBlank(),
-        )
-        val address = arguments.getString("companionAddress") ?: "http://10.0.2.2:8766"
-        val client = CompanionClient(address, token!!)
+        val playlistUrl = arguments.getString("playlistUrl")
+        assumeTrue("Optional on-device playlist test", !playlistUrl.isNullOrBlank())
+        val library = OnDeviceLibrary.get(context)
+        val playlist = library.importPlaylist(playlistUrl!!, "playtest-import") {}
+        library.setPreload(playlist.getString("id"), 1)
         val store = LibraryStore(context)
-        val playlist = client.request("/api/playlists/$playlistId")
         store.save(playlist)
-        store.prefs
-            .edit()
-            .putString("server", address)
-            .putString("token", token)
-            .putFloat("speed", 1f)
-            .putInt("timingOffset", 0)
-            .apply()
+        val first = playlist.getJSONArray("songs").getJSONObject(0)
+        library.cacheSong(playlist.getString("id"), first.getString("id")) {}
+        store.prefs.edit().putFloat("speed", 1f).putInt("timingOffset", 0).apply()
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity = it }
-            waitFor(45000) { store.offline(store.songs().getJSONObject(0)) }
+            waitFor(60000) { store.offline(store.songs().getJSONObject(0)) }
             screenshot("playlist-library")
             clickText("Play level  →")
             var current: GameView? = null

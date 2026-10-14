@@ -8,5 +8,6 @@ __pycache__/
 companion/cache/
 *.log
 artifacts/
+app/src/main/jniLibs/
 *.jks
 *.keystore

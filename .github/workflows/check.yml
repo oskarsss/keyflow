@@ -14,6 +14,10 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;36.0.0'
+      - uses: actions/cache@v4
+        with:
+          path: artifacts/upstream
+          key: ytdlnis-runtimes-${{ hashFiles('tools/prepare_android_runtimes.py') }}
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew --refresh-dependencies :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
       - uses: actions/upload-artifact@v4

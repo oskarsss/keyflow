@@ -66,8 +66,4 @@ class LibraryStore(private val context: Context) {
 
     fun offline(song: JSONObject) =
         song.optBoolean("demo") || (songFile(song, "mp3").isFile && songFile(song, "json").isFile)
-
-    fun server() = prefs.getString("server", "http://10.0.2.2:8765")!!
-
-    fun token() = prefs.getString("token", "")!!
 }

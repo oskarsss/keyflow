@@ -2,6 +2,7 @@
 """Build a signed release using the local, Git-ignored Keyflow signing key."""
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,7 +17,8 @@ password = password_file.read_text().strip()
 environment = os.environ.copy()
 environment.update(KEYFLOW_KEYSTORE=str(key), KEYFLOW_STORE_PASSWORD=password, KEYFLOW_KEY_PASSWORD=password)
 subprocess.run([str(root / "gradlew"), ":app:assembleRelease", "--console=plain"], cwd=root, env=environment, check=True)
-apk = artifacts / "keyflow-1.0.0.apk"
+version = re.search(r'versionName = "([^"]+)"', (root / "app/build.gradle.kts").read_text()).group(1)
+apk = artifacts / f"keyflow-{version}.apk"
 shutil.copyfile(root / "app/build/outputs/apk/release/app-release.apk", apk)
 checksum = hashlib.sha256(apk.read_bytes()).hexdigest()
 (artifacts / "SHA256SUMS").write_text(f"{checksum}  {apk.name}\n")

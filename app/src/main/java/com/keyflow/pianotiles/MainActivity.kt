@@ -35,9 +35,9 @@ class MainActivity : Activity() {
     private var page = ""
     private var pendingUrl = ""
     private var operation = 0
+    private var activeImport: String? = null
     private var foreground = true
     private var polling = false
-    private var prefetching = false
     private val attemptedPrefetch = mutableSetOf<String>()
     private var player: MediaPlayer? = null
     private var game: GameView? = null
@@ -61,6 +61,7 @@ class MainActivity : Activity() {
         setIntent(intent)
         if (intent.action == Intent.ACTION_SEND) {
             stopGame()
+            cancelImport()
             operation++
             pendingUrl = extractPlaylist(intent.getStringExtra(Intent.EXTRA_TEXT))
             showOnboarding()
@@ -200,8 +201,8 @@ class MainActivity : Activity() {
 
     private fun showOnboarding() {
         page("onboarding")
-        toolbar(if (store.playlist == null) "Connect" else "My journey") {
-            if (store.playlist == null) connect() else showLibrary()
+        toolbar(if (store.playlist == null) "Downloads" else "My journey") {
+            if (store.playlist == null) showDownloaderSettings() else showLibrary()
         }
         add(body, text("YOUR MUSIC. YOUR MOMENT.", 10, MINT, true).apply { letterSpacing = .14f })
         space(body, 14)
@@ -255,58 +256,50 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun connect(after: (() -> Unit)? = null) {
-        val form = column().apply { setPadding(dp(24), dp(12), dp(24), 0) }
-        add(
-            form,
-            text(
-                "Connect to the companion running on your computer. Use the same Wi-Fi network.",
-                14,
-                MUTED,
-            ),
-        )
-        space(form, 18)
-        add(form, text("Companion address", 12, TEXT, true))
-        space(form, 8)
-        val address = input("http://192.168.1.10:8765", store.server())
-        add(form, address)
-        space(form, 16)
-        add(form, text("Pairing code", 12, TEXT, true))
-        space(form, 8)
-        val token =
-            input("Code shown by the companion", store.token()).apply {
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+    private fun showDownloaderSettings() {
+        AlertDialog.Builder(this)
+            .setTitle("Built-in music downloads")
+            .setMessage(
+                "Playlist imports, audio downloads, and level creation run directly on your phone. No computer or server is needed.\n\nThe download engine can be updated independently when YouTube changes.",
+            )
+            .setPositiveButton("Update downloader") { _, _ -> updateDownloader() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun updateDownloader() {
+        val label =
+            text("Checking for updates…", 14, TEXT).apply {
+                setPadding(dp(24), dp(16), dp(24), dp(16))
             }
-        add(form, token)
         val dialog =
             AlertDialog.Builder(this)
-                .setTitle("Connect your library")
-                .setView(form)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Connect", null)
+                .setTitle("Update downloader")
+                .setView(label)
+                .setCancelable(false)
                 .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = address.text.toString().trim()
-                val code = token.text.toString().trim()
-                val uri = runCatching { URI(url) }.getOrNull()
-                when {
-                    uri == null ||
-                        uri.host == null ||
-                        uri.userInfo != null ||
-                        uri.scheme !in listOf("http", "https") ->
-                        address.error = "Enter a valid http:// or https:// address"
-                    code.isEmpty() -> token.error = "Enter the companion's pairing code"
-                    else -> {
-                        store.prefs.edit().putString("server", url).putString("token", code).apply()
-                        dialog.dismiss()
-                        if (after != null) after()
-                        else Toast.makeText(this, "Connection saved", Toast.LENGTH_SHORT).show()
-                    }
+        dialog.show()
+        io.execute {
+            runCatching {
+                library.runtime.updateExtractor { message ->
+                    handler.post { if (!isDestroyed) label.text = message }
                 }
             }
+                .onSuccess { version ->
+                    handler.post {
+                        dialog.dismiss()
+                        if (!isDestroyed)
+                            Toast.makeText(this, "Downloader updated · $version", Toast.LENGTH_LONG)
+                                .show()
+                    }
+                }
+                .onFailure { error ->
+                    handler.post {
+                        dialog.dismiss()
+                        if (!isDestroyed) showError(error)
+                    }
+                }
         }
-        dialog.show()
     }
 
     private fun beginImport() {
@@ -321,16 +314,26 @@ class MainActivity : Activity() {
             playlistInput.error = "Paste a YouTube Music playlist link with list=…"
             return
         }
-        if (store.token().isEmpty()) connect(::importPlaylist) else importPlaylist()
+        importPlaylist()
     }
 
-    private fun client() = CompanionClient(store.server(), store.token())
+    private val library: OnDeviceLibrary
+        get() = OnDeviceLibrary.get(this)
+
+    private fun cancelImport() {
+        activeImport?.let { library.runtime.cancel(it) }
+        activeImport = null
+    }
 
     private fun importPlaylist() {
+        cancelImport()
+        val job = "import-${java.util.UUID.randomUUID()}"
+        activeImport = job
         val run = ++operation
         page("import")
         toolbar("Cancel") {
             operation++
+            cancelImport()
             showOnboarding()
         }
         space(body, 36)
@@ -349,50 +352,34 @@ class MainActivity : Activity() {
                 MUTED,
             ),
         )
-        val client = client()
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 20)
+        val url = pendingUrl
         io.execute {
-            runCatching { client.request("/api/import", JSONObject().put("url", pendingUrl)) }
-                .onSuccess { response ->
-                    handler.post { pollImport(client, response.optString("jobId"), run) }
-                }
-                .onFailure { error ->
+            runCatching {
+                library.importPlaylist(url, job) { message ->
                     handler.post {
-                        if (operation == run && !isDestroyed) {
-                            showOnboarding()
-                            showError(error)
-                        }
+                        if (operation == run && !isDestroyed) importStatus.text = message
                     }
                 }
-        }
-    }
-
-    private fun pollImport(client: CompanionClient, id: String, run: Int) {
-        if (operation != run || isDestroyed) return
-        io.execute {
-            runCatching { client.request("/api/jobs/$id") }
-                .onSuccess { response ->
+            }
+                .onSuccess { playlist ->
                     handler.post {
-                        if (operation != run || isDestroyed) return@post
-                        when {
-                            response.optString("status") == "error" -> {
-                                showOnboarding()
-                                showError(IllegalStateException(response.optString("message")))
-                            }
-                            response.optJSONObject("playlist") != null -> {
-                                store.save(response.getJSONObject("playlist"))
-                                showLibrary()
-                            }
-                            else -> {
-                                importStatus.text =
-                                    response.optString("message", "Reading your playlist…")
-                                handler.postDelayed({ pollImport(client, id, run) }, 2000)
-                            }
+                        if (operation == run && !isDestroyed) {
+                            activeImport = null
+                            store.save(playlist)
+                            showLibrary()
                         }
                     }
                 }
                 .onFailure { error ->
                     handler.post {
                         if (operation == run && !isDestroyed) {
+                            activeImport = null
                             showOnboarding()
                             showError(error)
                         }
@@ -403,8 +390,11 @@ class MainActivity : Activity() {
 
     private fun showLibrary() {
         if (isDestroyed || store.playlist == null) return
+        library.bootstrap(store.playlist!!)
         page("library")
         toolbar("＋ Playlist", ::showOnboarding)
+        add(body, button("Play & download settings", false, ::showSettings))
+        space(body, 18)
         val heading = row()
         weight(heading, text("Your journey", 30, TEXT, true))
         heading.addView(
@@ -460,7 +450,7 @@ class MainActivity : Activity() {
         space(body, 12)
         add(body, button("Play settings", false, ::showSettings))
         space(body, 10)
-        add(body, button("Companion connection", false) { connect { startPolling() } })
+        add(body, button("Built-in downloader", false, ::showDownloaderSettings))
         space(body, 16)
         add(
             body,
@@ -652,26 +642,28 @@ class MainActivity : Activity() {
 
     private fun loadCover(frame: FrameLayout, song: JSONObject, locked: Boolean) {
         if (song.optBoolean("demo")) return
-        val client = client()
         images.execute {
             runCatching {
                 val file = store.songFile(song, "jpg")
                 if (!file.exists()) {
-                    if (song.optString("cover").isNotEmpty())
-                        client.download(song.getString("cover"), file)
-                    else {
-                        val url = song.optString("thumbnail")
-                        if (!url.startsWith("https://")) return@execute
-                        val connection = URI(url).toURL().openConnection() as HttpURLConnection
-                        connection.connectTimeout = 8000
-                        connection.readTimeout = 8000
-                        try {
-                            connection.inputStream.use { input ->
-                                file.outputStream().use { input.copyTo(it) }
-                            }
-                        } finally {
-                            connection.disconnect()
+                    val url = song.optString("thumbnail")
+                    if (!url.startsWith("https://")) return@execute
+                    val connection = URI(url).toURL().openConnection() as HttpURLConnection
+                    connection.connectTimeout = 8000
+                    connection.readTimeout = 8000
+                    val temporary = java.io.File(file.path + ".cover-part")
+                    try {
+                        connection.inputStream.use { input ->
+                            temporary.outputStream().use { input.copyTo(it) }
                         }
+                        java.nio.file.Files.move(
+                            temporary.toPath(),
+                            file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    } finally {
+                        connection.disconnect()
+                        temporary.delete()
                     }
                 }
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -702,12 +694,11 @@ class MainActivity : Activity() {
             polling ||
                 !foreground ||
                 store.playlist == null ||
-                store.playlist!!.optString("id") == "keyflow-originals" ||
-                store.token().isEmpty()
+                store.playlist!!.optString("id") == "keyflow-originals"
         )
             return
         polling = true
-        handler.postDelayed(::pollLibrary, 2500)
+        handler.postDelayed(::pollLibrary, 1000)
     }
 
     private fun pollLibrary() {
@@ -716,70 +707,36 @@ class MainActivity : Activity() {
             return
         }
         val id = store.playlist!!.optString("id")
-        val client = client()
         io.execute {
-            runCatching { client.request("/api/playlists/$id") }
-                .onSuccess { playlist ->
-                    handler.post {
-                        polling = false
-                        if (
-                            page != "library" ||
-                                store.playlist?.optString("id") != id ||
-                                isDestroyed
-                        )
-                            return@post
-                        if (playlist.toString() != store.playlist.toString()) {
-                            val y = scroll.scrollY
-                            store.save(playlist)
-                            showLibrary()
-                            scroll.post { scroll.scrollTo(0, y) }
-                        }
-                        startPolling()
-                    }
+            val playlist = library.snapshot(id)
+            handler.post {
+                polling = false
+                if (page != "library" || isDestroyed || store.playlist?.optString("id") != id)
+                    return@post
+                if (playlist != null && playlist.toString() != store.playlist.toString()) {
+                    val y = scroll.scrollY
+                    store.save(playlist)
+                    showLibrary()
+                    scroll.post { scroll.scrollTo(0, y) }
                 }
-                .onFailure {
-                    handler.post {
-                        polling = false
-                        if (page == "library")
-                            libraryStatus.text =
-                                "Companion offline. Saved songs are still playable."
-                        if (foreground && !isDestroyed) handler.postDelayed(::startPolling, 15000)
-                    }
-                }
+                startPolling()
+            }
         }
     }
 
     private fun prefetch() {
-        if (prefetching || store.playlist?.optString("id") == "keyflow-originals") return
-        val count =
-            store.prefs.getInt(
-                "preload.${store.playlist?.optString("id")}",
-                store.playlist?.optInt("preloadCount", 3) ?: 3,
-            )
+        val playlist = store.playlist ?: return
+        val id = playlist.optString("id")
+        if (id == "keyflow-originals") return
+        val count = store.prefs.getInt("preload.$id", playlist.optInt("preloadCount", 3))
         val songs =
             (0 until minOf(count, store.songs().length()))
                 .map { store.songs().getJSONObject(it) }
-                .filter {
-                    it.optString("status") == "ready" &&
-                        !store.offline(it) &&
-                        it.optString("id") !in attemptedPrefetch
-                }
+                .filter { !store.offline(it) && it.optString("id") !in attemptedPrefetch }
         if (songs.isEmpty()) return
         attemptedPrefetch.addAll(songs.map { it.optString("id") })
-        prefetching = true
-        val id = store.playlist?.optString("id")
-        val client = client()
-        io.execute {
-            for (song in songs) runCatching { downloadSong(client, song) }
-            handler.post {
-                prefetching = false
-                if (!isDestroyed && page == "library" && store.playlist?.optString("id") == id) {
-                    val y = scroll.scrollY
-                    showLibrary()
-                    scroll.post { scroll.scrollTo(0, y) }
-                }
-            }
-        }
+        library.setPreload(id, count)
+        DownloadService.start(this, id)
     }
 
     private fun prepareSong(song: JSONObject, index: Int) {
@@ -808,29 +765,17 @@ class MainActivity : Activity() {
                 MUTED,
             ),
         )
-        val client = client()
         val playlistId = store.playlist!!.optString("id")
+        if (!song.optBoolean("demo") && !store.offline(song)) {
+            DownloadService.start(this, playlistId, song.optString("id"))
+            waitForSong(playlistId, song, index, run, status)
+            return
+        }
         io.execute {
-            runCatching {
-                if (song.optBoolean("demo")) store.prepareDemo(song)
-                else if (!store.offline(song)) {
-                    if (song.optString("status") != "ready") {
-                        client.request(
-                            "/api/cache",
-                            JSONObject()
-                                .put("playlistId", playlistId)
-                                .put("songId", song.optString("id")),
-                        )
-                        waitForSong(client, playlistId, song, index, run, status)
-                        return@execute
-                    }
-                    handler.post {
-                        if (operation == run) status.text = "Saving audio for offline play…"
-                    }
-                    downloadSong(client, song)
+            runCatching { if (song.optBoolean("demo")) store.prepareDemo(song) }
+                .onSuccess {
+                    handler.post { if (operation == run && !isDestroyed) launchGame(song, index) }
                 }
-                handler.post { if (operation == run && !isDestroyed) launchGame(song, index) }
-            }
                 .onFailure { error ->
                     handler.post {
                         if (operation == run && !isDestroyed) {
@@ -842,15 +787,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun downloadSong(client: CompanionClient, song: JSONObject) {
-        if (!store.songFile(song, "json").exists())
-            client.download(song.optString("chart"), store.songFile(song, "json"))
-        if (!store.songFile(song, "mp3").exists())
-            client.download(song.optString("audio"), store.songFile(song, "mp3"))
-    }
-
     private fun waitForSong(
-        client: CompanionClient,
         playlistId: String,
         song: JSONObject,
         index: Int,
@@ -860,49 +797,43 @@ class MainActivity : Activity() {
         if (operation != run || isDestroyed) return
         handler.postDelayed(
             {
-                if (operation == run && !isDestroyed)
-                    io.execute {
-                        runCatching {
-                            val playlist = client.request("/api/playlists/$playlistId")
-                            val songs = playlist.getJSONArray("songs")
-                            val updated =
-                                (0 until songs.length())
-                                    .map { songs.getJSONObject(it) }
-                                    .firstOrNull { it.optString("id") == song.optString("id") }
-                                    ?: error("Song missing. Import your playlist again.")
-                            if (updated.optString("status") == "error")
-                                error(updated.optString("error"))
-                            if (updated.optString("status") == "ready") {
-                                handler.post {
-                                    if (operation == run)
-                                        status.text = "Saving audio for offline play…"
-                                }
-                                downloadSong(client, updated)
-                                handler.post {
-                                    if (operation == run && !isDestroyed) {
-                                        store.save(playlist)
-                                        launchGame(updated, index)
-                                    }
-                                }
-                            } else
-                                handler.post {
-                                    if (operation == run) {
-                                        status.text = "Caching your song on the companion…"
-                                        waitForSong(client, playlistId, song, index, run, status)
-                                    }
-                                }
-                        }
-                            .onFailure { error ->
-                                handler.post {
-                                    if (operation == run && !isDestroyed) {
-                                        showLibrary()
-                                        showError(error)
-                                    }
-                                }
-                            }
+                if (operation != run || isDestroyed) return@postDelayed
+                io.execute {
+                    val playlist = library.snapshot(playlistId)
+                    val songs = playlist?.optJSONArray("songs")
+                    val updated = songs?.let { values ->
+                        (0 until values.length())
+                            .map { values.getJSONObject(it) }
+                            .firstOrNull { it.optString("id") == song.optString("id") }
                     }
+                    handler.post {
+                        if (operation != run || isDestroyed) return@post
+                        if (updated == null) {
+                            showLibrary()
+                            showError(
+                                IllegalStateException("Song not found. Import the playlist again."),
+                            )
+                            return@post
+                        }
+                        when {
+                            store.offline(updated) -> {
+                                store.save(playlist!!)
+                                launchGame(updated, index)
+                            }
+                            updated.optString("status") == "error" -> {
+                                showLibrary()
+                                showError(IllegalStateException(updated.optString("error")))
+                            }
+                            else -> {
+                                status.text =
+                                    updated.optString("progress", "Preparing audio on this phone…")
+                                waitForSong(playlistId, song, index, run, status)
+                            }
+                        }
+                    }
+                }
             },
-            2000,
+            750,
         )
     }
 
@@ -1217,29 +1148,9 @@ class MainActivity : Activity() {
                     .apply()
                 dialog.dismiss()
                 if (playlistId != "keyflow-originals") {
-                    val client = client()
-                    io.execute {
-                        runCatching {
-                            client.request(
-                                "/api/prefetch",
-                                JSONObject().put("playlistId", playlistId).put("count", count),
-                            )
-                        }
-                            .onSuccess { playlist ->
-                                handler.post {
-                                    if (
-                                        !isDestroyed &&
-                                            store.playlist?.optString("id") == playlistId
-                                    ) {
-                                        store.save(playlist)
-                                        if (page == "library") showLibrary()
-                                    }
-                                }
-                            }
-                            .onFailure { error ->
-                                handler.post { if (!isDestroyed) showError(error) }
-                            }
-                    }
+                    store.save(library.setPreload(playlistId, count))
+                    attemptedPrefetch.clear()
+                    if (page == "library") showLibrary()
                 }
             }
         }
@@ -1251,6 +1162,7 @@ class MainActivity : Activity() {
             page == "game" -> showPause()
             store.playlist != null && page != "library" -> {
                 operation++
+                cancelImport()
                 stopGame()
                 showLibrary()
             }
@@ -1272,6 +1184,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         operation++
+        cancelImport()
         stopGame()
         handler.removeCallbacksAndMessages(null)
         io.shutdownNow()
@@ -1287,7 +1200,7 @@ class MainActivity : Activity() {
                     error is java.net.SocketTimeoutException ||
                     error is java.net.UnknownHostException
             )
-                "Cannot reach the companion. Start it on your computer, check its address and pairing code, and use the same Wi-Fi network."
+                "The download could not connect. Check the phone’s internet connection and retry."
             else error.message ?: "Something went wrong. Please retry."
         AlertDialog.Builder(this)
             .setTitle("Let's try that again")
