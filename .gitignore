@@ -1,0 +1,12 @@
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+__pycache__/
+.venv/
+companion/cache/
+*.log
+artifacts/
+*.jks
+*.keystore
