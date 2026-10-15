@@ -168,7 +168,10 @@ class NativeRuntime(private val context: Context) {
     }
 
     /** Consume decoded PCM before waiting, so FFmpeg cannot deadlock on a full stdout pipe. */
-    fun <T> audioSamples(audio: File, id: String, consume: (InputStream) -> T): T {
+    fun <T> audioSamples(audio: File, id: String, consume: (InputStream) -> T): T =
+        audioSamples(audio, id, 11025, consume)
+
+    fun <T> audioSamples(audio: File, id: String, rate: Int, consume: (InputStream) -> T): T {
         initialize()
         val command =
             listOf(
@@ -186,7 +189,7 @@ class NativeRuntime(private val context: Context) {
                 "-ac",
                 "1",
                 "-ar",
-                "11025",
+                rate.toString(),
                 "pipe:1",
             )
         val process = start(command, id)

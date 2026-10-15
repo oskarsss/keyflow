@@ -18,9 +18,10 @@ Age is measured from the later of the last play and download time. Playing songs
 and a small fallback reserve are protected. Cleanup removes the song's audio, charts and cover,
 while retaining playlists, scores and unlocks. Shared songs are processed once.
 
-Each play receives a lane permutation that differs from the previous layout. Musical times and
-durations remain unchanged, chords stay together, and permutations that introduce conflicts with
-overlapping slide paths are rejected. Clearing every tap in a chord within 65 ms earns
+Each play receives a hand-preserving lane permutation that differs from the previous layout.
+Musical times and durations remain unchanged, chords stay together, and permutations that introduce
+conflicts with overlapping slide paths are rejected. The final chart gate permits at most one action
+per hand, including during holds. Clearing every tap in a chord within 65 ms earns
 `100 × (chord size − 1) × multiplier` extra points, with a gold burst and bonus banner.
 
 The stutter investigation removed chart parsing, arcade catalog reads and preparation queue

@@ -151,9 +151,27 @@ class GameSessionTest {
         assertEquals(0, game.misses)
         val stopped = GameSession(listOf(GameSession.Note(1.0, 0, "slide", 1.0, 3)))
         stopped.press(0, 1.0, 2)
-        stopped.advance(1.3)
         stopped.advance(1.5)
+        stopped.advance(1.8)
         assertEquals(1, stopped.misses)
+    }
+
+    @Test
+    fun aBriefSlideExcursionCanRecoverWhileAProlongedExitFailsOnce() {
+        val note = GameSession.Note(1.0, 0, "slide", 2.0, 1)
+        val game = GameSession(listOf(note))
+        game.press(0, 1.0, 7)
+        game.move(7, 3.5f, 1.4)
+        game.advance(1.6)
+        assertEquals(0, game.misses)
+        game.move(7, note.laneAt(1.61), 1.61)
+        game.move(7, note.laneAt(2.0) + .85f, 2.0)
+        game.advance(2.01)
+        assertEquals(0, game.misses)
+        game.move(7, 3.5f, 2.1)
+        game.advance(2.4)
+        game.advance(4.0)
+        assertEquals(1, game.misses)
     }
 
     @Test
@@ -209,18 +227,18 @@ class GameSessionTest {
 
     @Test
     fun failedGestureCannotDragIntoAnotherTileAndOtherFingersStillWork() {
-        val next = GameSession.Note(1.6, 0)
+        val next = GameSession.Note(1.9, 0)
         val chord = GameSession.Note(1.1, 2)
         val game = GameSession(listOf(GameSession.Note(1.0, 0, "slide", 1.0, 3), chord, next))
         game.press(0, 1.0, 7)
         assertEquals(1, game.press(2, 1.1, 8))
-        game.advance(1.3)
         game.advance(1.5)
+        game.advance(1.8)
         assertEquals(1, game.misses)
-        assertEquals(0, game.move(7, .5f, 1.55))
+        assertEquals(0, game.move(7, .5f, 1.85))
         assertEquals(0, next.judgement)
-        game.release(7, 1.56)
-        assertEquals(1, game.press(0, 1.6, 7))
+        game.release(7, 1.86)
+        assertEquals(1, game.press(0, 1.9, 7))
     }
 
     @Test

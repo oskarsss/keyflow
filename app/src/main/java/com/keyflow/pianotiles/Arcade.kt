@@ -108,9 +108,9 @@ object Arcade {
     }
 
     /** Notes that fit a segment, leaving room for the countdown and the fade-out. */
-    fun clip(notes: List<GameSession.Note>, startMs: Int, endMs: Int): List<GameSession.Note> {
+    fun clip(notes: List<GameSession.Note>, startMs: Int, endMs: Int, leadIn: Double = .4): List<GameSession.Note> {
         if (startMs == 0 && endMs == 0) return notes
-        val from = startMs / 1000.0 + .4
+        val from = startMs / 1000.0 + leadIn
         val to = if (endMs == 0) Double.MAX_VALUE else endMs / 1000.0 - .6
         return notes.filter { it.time >= from && it.time + it.duration <= to }
     }

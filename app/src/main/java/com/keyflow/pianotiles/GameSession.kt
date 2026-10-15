@@ -24,6 +24,7 @@ class GameSession(
         val endLane: Int = lane,
     ) {
         var judgement = 0
+        var timingErrorMs = 0.0
 
         fun laneAt(time: Double): Float =
             lane +
@@ -91,6 +92,12 @@ class GameSession(
     var lastCompletedLane = 0
         private set
 
+    var lastCompletedKind = "tap"
+        private set
+
+    var lastTimingErrorMs = 0.0
+        private set
+
     var lastQuality = 1
         private set
 
@@ -123,7 +130,7 @@ class GameSession(
     ): Int {
         val regrip =
             active.entries.firstOrNull {
-                it.value.awaitingGrip && abs(it.value.note.laneAt(time) - position) <= .7f
+                it.value.awaitingGrip && abs(it.value.note.laneAt(time) - position) <= .9f
             }
         if (regrip != null) {
             val gesture = regrip.value
@@ -174,7 +181,8 @@ class GameSession(
             miss(lane)
             return 3
         }
-        val quality = if (closest <= .080) 1 else 2
+        note.timingErrorMs = (time - note.time) * 1000
+        val quality = if (closest <= PERFECT_WINDOW) 1 else 2
         if (note.kind != "tap" && note.duration > 0) {
             note.judgement = 4
             active[pointer] = Gesture(note, quality, position)
@@ -188,6 +196,8 @@ class GameSession(
         note.judgement = quality
         lastCompletedLane = note.endLane
         lastQuality = quality
+        lastCompletedKind = note.kind
+        lastTimingErrorMs = note.timingErrorMs
         hits++
         combo++
         maxCombo = maxOf(maxCombo, combo)
@@ -227,7 +237,7 @@ class GameSession(
         val gesture = active.remove(pointer) ?: return
         if (
             time >= gesture.note.time + gesture.note.duration - .14 &&
-                abs(gesture.position - gesture.note.laneAt(time)) <= .7f
+                abs(gesture.position - gesture.note.laneAt(time)) <= .9f
         )
             complete(gesture.note, gesture.quality, time)
         else {
@@ -260,10 +270,10 @@ class GameSession(
                 }
                 continue
             }
-            val outside = abs(gesture.position - note.laneAt(time)) > .7f
+            val outside = abs(gesture.position - note.laneAt(time)) > .9f
             if (outside && gesture.outsideSince < 0) gesture.outsideSince = time
             if (!outside) gesture.outsideSince = -1.0
-            if (outside && time - gesture.outsideSince > .16) {
+            if (outside && time - gesture.outsideSince > .24) {
                 note.judgement = 3
                 miss(note.laneAt(time).toInt().coerceIn(0, 3))
                 iterator.remove()
@@ -311,6 +321,7 @@ class GameSession(
     fun failed() = mortal && lives <= 0
 
     companion object {
+        const val PERFECT_WINDOW = .080
         const val WINDOW = .180
         const val MAX_LIVES = 8
         const val RECOVER_STREAK = 25

@@ -403,7 +403,14 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
 
     private fun writeChart(song: JSONObject, audio: File, songId: String): AudioChart.Chart {
         val samples = runtime.audioSamples(audio, "chart-$songId", AudioChart::readPcm)
-        val chart = AudioChart.generate(samples, songId)
+        val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
+        val rhythm = BeatThis(context).analyze(features)
+        val chart = if (rhythm.beats.size >= 4) MusicalChart.generate(samples, features, rhythm, songId)
+            else AudioChart.generate(samples, songId).let { fallback ->
+                check(fallback.method == "onsets") { "This song has no clear rhythm to create a level. Try another song." }
+                fallback.copy(notes = ThumbChart.makePlayable(fallback.notes))
+            }
+        check(chart.notes.isNotEmpty()) { "This song has no playable musical attacks. Try another song." }
         val notes = JSONArray()
         for (note in chart.notes) notes.put(
             JSONObject()
@@ -423,6 +430,11 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                         .put("method", chart.method)
                         .put("beats", JSONArray(chart.beats))
                         .put("barPhase", chart.barPhase)
+                        .put("bpm", chart.bpm)
+                        .put("downbeats", JSONArray(chart.downbeats))
+                        .put("sections", JSONArray(chart.sections.map { section -> JSONObject()
+                            .put("start", section.start).put("end", section.end)
+                            .put("family", section.family).put("intensity", section.intensity) }))
                         .put("notes", notes)
                         .toString(),
                 )

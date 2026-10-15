@@ -95,7 +95,7 @@ class GameView(
         /** Shown under the countdown, such as "Song 3 · Speed ×1.10". */
         val caption: String = "",
         val segmentDone: String = "Song complete!",
-        /** Beat times in song seconds for the rushing beat lines; every fourth from [barPhase] is a bar. */
+        /** Beat times in song seconds, used to pulse the stationary hit targets. */
         val beats: DoubleArray = DoubleArray(0),
         val barPhase: Int = 0,
     )
@@ -493,9 +493,11 @@ class GameView(
         val lane = w / 4
         if (session.hits > observedHits) {
             observedHits = session.hits
+            if (options.haptics && (session.lastCompletedKind == "hold" || session.lastCompletedKind == "slide"))
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             val perfect = session.lastQuality == 1
             val color = if (perfect) Palette.MINT else Palette.ACCENT
-            judgement = if (perfect) "PERFECT" else "GOOD"
+            judgement = if (perfect) "PERFECT" else if (session.lastTimingErrorMs < 0) "GOOD · EARLY" else "GOOD · LATE"
             judgementColor = color
             judgementAt = now
             comboAt = now
@@ -602,24 +604,10 @@ class GameView(
             paint.color = 0x14FFFFFF
             canvas.drawRect(i * lane, worldY(.3f), (i + 1) * lane, line, paint)
         }
-        // Beat lines rushing toward the player follow the song's own beat; bar lines are brighter.
+        // Keep the musical pulse for the fixed receptors. Moving road stripes obscure timing.
         val beats = options.beats
-        if (beats.isNotEmpty()) {
-            while (beatIndex > 0 && beats[beatIndex - 1] >= time) beatIndex--
-            while (beatIndex < beats.size && beats[beatIndex] < time) beatIndex++
-            var k = beatIndex
-            while (k < beats.size && beats[k] < time + options.travel * 1.05) {
-                val bar = (k - options.barPhase).mod(4) == 0
-                beatLine(canvas, progress(beats[k]), fever, bar)
-                k++
-            }
-        } else {
-            var t = ceil(time / BEAT) * BEAT
-            while (t < time + options.travel * 1.05) {
-                beatLine(canvas, progress(t), fever, false)
-                t += BEAT
-            }
-        }
+        while (beatIndex > 0 && beats[beatIndex - 1] >= time) beatIndex--
+        while (beatIndex < beats.size && beats[beatIndex] < time) beatIndex++
         canvas.restore()
         if (session.lives <= 2 && endingAt == 0L) {
             paint.shader = danger
@@ -638,14 +626,6 @@ class GameView(
     }
 
     private var beatIndex = 0
-
-    private fun beatLine(canvas: Canvas, p: Float, fever: Boolean, bar: Boolean) {
-        if (p < 0) return
-        paint.strokeWidth = dp(if (bar) 3f else 1.6f)
-        val color = if (fever) 0x55FCD34D else if (bar) 0x5CA78BFA else 0x30A78BFA
-        paint.color = alpha(color, 1 - p * .8f)
-        canvas.drawLine(0f, worldY(p), w, worldY(p), paint)
-    }
 
     /** 1 right on a beat, fading to 0 shortly after, so the strike line pulses with the music. */
     private fun pulse(time: Double): Float {
@@ -753,10 +733,10 @@ class GameView(
         block(canvas, l, r, yb, yt, look, a)
         val delta = note.time - time
         val danger = note.kind == GameSession.AVOID
-        if (!missed && (danger || abs(delta) <= GameSession.WINDOW)) {
+        if (!missed && (danger || abs(delta) <= GameSession.PERFECT_WINDOW)) {
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(3f)
-            paint.color = if (danger) alpha(Palette.RED, (.55f + .45f * sin(now / 90f)) * a) else 0xE6FFFFFF.toInt()
+            paint.color = if (danger) alpha(Palette.RED, (.55f + .45f * sin(now / 90f)) * a) else 0xFF81F5CA.toInt()
             canvas.drawRoundRect(rect, radius, radius, paint)
             paint.style = Paint.Style.FILL
         }
@@ -778,6 +758,7 @@ class GameView(
     }
 
     private var lastSpark = 0L
+    private var lastSlideHaptic = 0L
 
     /**
      * Holds and slides: a tile to press, a glowing ribbon to follow and a cap where it ends. While
@@ -881,6 +862,18 @@ class GameView(
             block(canvas, x - lane * .43f, x + lane * .43f, line, worldY(TILE * .5f), look, 1f)
             paint.color = alpha(Color.WHITE, .25f + .2f * sin(now / 50f))
             canvas.drawRoundRect(x - lane * .43f, worldY(TILE * .5f), x + lane * .43f, line, dp(9f), dp(9f), paint)
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(3f)
+            paint.color = Color.WHITE
+            canvas.drawCircle(x, line, lane * .26f, paint)
+            if (slide) {
+                val future = note.laneAt(minOf(end, time + .45)) * lane
+                canvas.drawLine(x, line, future, line, paint)
+                val dir = if (future > x) 1f else -1f
+                canvas.drawLine(future, line, future - dir * dp(8f), line - dp(6f), paint)
+                canvas.drawLine(future, line, future - dir * dp(8f), line + dp(6f), paint)
+            }
+            paint.style = Paint.Style.FILL
             val l = (x / lane).toInt().coerceIn(0, 3)
             laneGlowAt[l] = now - 120
             laneGlowColor[l] = color
@@ -912,9 +905,9 @@ class GameView(
                     canvas.drawLine(mx - c, my - dp(5f), mx + c, my - dp(5f), paint)
                     canvas.drawLine(mx - c, my + dp(5f), mx + c, my + dp(5f), paint)
                 }
-                if (abs(note.time - time) <= GameSession.WINDOW) {
+                if (abs(note.time - time) <= GameSession.PERFECT_WINDOW) {
                     paint.strokeWidth = dp(3f)
-                    paint.color = 0xE6FFFFFF.toInt()
+                    paint.color = 0xFF81F5CA.toInt()
                     canvas.drawRoundRect(rect, dp(9f), dp(9f), paint)
                 }
                 paint.style = Paint.Style.FILL
@@ -930,10 +923,21 @@ class GameView(
         canvas.drawRect(0f, line - dp(46f + 14f * beat), w, line, paint)
         paint.shader = null
         paint.alpha = 255
-        paint.color = 0xFFEDE9FE.toInt()
-        val bar = dp(2f + 1.5f * beat)
-        canvas.drawRoundRect(0f, line - bar, w, line + bar, dp(2f), dp(2f), paint)
+        // The target never moves. The green band is the actual ±80 ms perfect window.
+        val early = yAt((GameSession.PERFECT_WINDOW / options.travel).toFloat())
+        val late = yAt((-GameSession.PERFECT_WINDOW / options.travel).toFloat())
+        paint.color = 0x2581F5CA
+        canvas.drawRect(0f, early, w, late, paint)
+        paint.color = 0xFFB5FFE5.toInt()
+        canvas.drawRect(0f, line - dp(2f), w, line + dp(2f), paint)
         val lane = w / 4
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(2f)
+        for (i in 0..3) {
+            val x = (i + .5f) * lane
+            canvas.drawRoundRect(x - lane * .34f, early, x + lane * .34f, late, dp(7f), dp(7f), paint)
+        }
+        paint.style = Paint.Style.FILL
         for (i in 0..3) {
             var pressed = false
             for (k in 0 until pointerLanes.size()) if (pointerLanes.valueAt(k) == i) pressed = true
@@ -1090,8 +1094,8 @@ class GameView(
             y += dp(48f)
         }
         if (options.hint) {
-            text(canvas, "Tap tiles as they reach the line", 15f, Palette.TEXT, cx, y)
-            text(canvas, "Hold green rails · follow blue slides", 13f, Palette.MUTED, cx, y + dp(22f))
+            text(canvas, "Tap when the tile edge reaches the green line", 15f, Palette.TEXT, cx, y)
+            text(canvas, "Hold green tiles · slide with the white ring", 13f, Palette.MUTED, cx, y + dp(22f))
             y += dp(60f)
         }
         for (kind in options.introduce) {
@@ -1199,7 +1203,14 @@ class GameView(
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
-                    pointerLanes.put(id, (event.getX(i) / laneWidth).toInt().coerceIn(0, 3))
+                    val nextLane = (event.getX(i) / laneWidth).toInt().coerceIn(0, 3)
+                    val now = SystemClock.uptimeMillis()
+                    if (options.haptics && pointerLanes.get(id, nextLane) != nextLane &&
+                        session.activeKind(id) == "slide" && now - lastSlideHaptic > 90) {
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        lastSlideHaptic = now
+                    }
+                    pointerLanes.put(id, nextLane)
                     session.move(id, event.getX(i) / laneWidth, time)
                 }
             }
@@ -1245,6 +1256,9 @@ class GameView(
         private val MISSED = Look(intArrayOf(0xFF3A1A2A.toInt(), 0xFF6B2A3F.toInt(), 0xFF9F3550.toInt()), 0xFF2A0F18.toInt())
         private val HOLD = Look(intArrayOf(0xFF0F5F59.toInt(), 0xFF14B8A6.toInt(), 0xFFB5F5EA.toInt()), 0xFF0A3D3A.toInt())
         private val SLIDE = Look(intArrayOf(0xFF0B4A7A.toInt(), 0xFF0EA5E9.toInt(), 0xFFC7ECFF.toInt()), 0xFF082F4F.toInt())
+
+        fun travelForTempo(base: Double, bpm: Double): Double =
+            if (bpm.isFinite() && bpm > 0) base * (120 / bpm).coerceIn(.8, 1.3) else base
 
         /** Song-seconds a tile spends falling, for the Slow / Normal / Fast note speeds. */
         val TRAVEL = doubleArrayOf(2.2, 1.7, 1.3)

@@ -22,7 +22,7 @@ class VarietyAndArcadeTest {
         assertTrue(first.zipWithNext().all { (a, b) -> a.time <= b.time })
         assertTrue(first.any { it.kind == GameSession.GOLD })
         assertTrue(first.any { it.kind == GameSession.AVOID })
-        assertTrue(first.groupBy { it.time }.values.any { same -> same.count { it.kind != GameSession.AVOID } == 2 })
+        assertTrue(first.groupBy { it.time }.values.all { same -> same.count { it.kind != GameSession.AVOID } == 1 })
         for (time in first.groupBy { it.time }.values) assertEquals(time.size, time.map { it.lane }.toSet().size)
         // Every original note is still there, so the music-synced chart is never thinned out.
         assertEquals(base.size, first.count { it.kind != GameSession.AVOID } - first.groupBy { it.time }.values.sumOf { g -> g.count { it.kind != GameSession.AVOID } - 1 })
@@ -36,7 +36,7 @@ class VarietyAndArcadeTest {
     }
 
     @Test
-    fun chartedChordsGrowWithTheLevel() {
+    fun chartedChordsStayPlayableWithTwoThumbsAtEveryLevel() {
         val base = (0 until 40).flatMap { i ->
             val time = 1.0 + i
             if (i % 4 == 0) (0..3).map { GameSession.Note(time, it) } else listOf(GameSession.Note(time, i % 4))
@@ -45,11 +45,11 @@ class VarietyAndArcadeTest {
             .filter { it.kind != GameSession.AVOID }
             .groupBy { it.time }.values.maxOf { it.size }
         assertEquals(2, largest(0))
-        assertEquals(3, largest(1))
-        assertEquals(4, largest(5))
-        // Charted chords are kept as they are; no random extra chords are mixed in.
+        assertEquals(2, largest(1))
+        assertEquals(2, largest(5))
+        // Old four-tile chords are reduced; no random extra chords are mixed in.
         val decorated = TileVariety.decorate(base, 5, 3).filter { it.kind != GameSession.AVOID }
-        assertEquals(base.size, decorated.size)
+        assertEquals(base.groupBy { it.time }.values.sumOf { minOf(2, it.size) }, decorated.size)
     }
 
     @Test

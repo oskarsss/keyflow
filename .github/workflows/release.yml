@@ -43,6 +43,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Verify
         run: |
+          python3 tools/prepare_rhythm_model.py --check
           ./gradlew :app:testDebugUnitTest :app:lintDebug --console=plain
           python3 -m unittest discover -s tools -p 'test_*.py' -v
       - name: Prepare signing key

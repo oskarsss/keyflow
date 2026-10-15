@@ -971,7 +971,8 @@ class MainActivity : Activity() {
     private fun bindRow(row: SongRow, song: JSONObject) {
         val unlocked = store.unlocked(row.index)
         val secs = song.optDouble("duration").toInt()
-        val length = if (secs > 0) String.format(Locale.US, "%d:%02d", secs / 60, secs % 60) else ""
+        val length = if (secs > 150 && store.prefs.getBoolean("shortLevels", true)) "Highlights · ≤2:30"
+            else if (secs > 0) String.format(Locale.US, "%d:%02d", secs / 60, secs % 60) else ""
         row.subtitle.text = listOf(song.optString("artist"), length).filter { it.isNotBlank() }.joinToString(" · ")
         row.trailing.removeAllViews()
         if (unlocked && !store.completed(song)) {
@@ -1296,9 +1297,15 @@ class MainActivity : Activity() {
             }
         }
         divider(gameplay)
-        settingStack(gameplay, "Note speed", "How fast tiles fall") {
+        settingStack(gameplay, "Note speed", "Follows the song's tempo") {
             ui.segmented(listOf("Slow", "Normal", "Fast"), prefs.getInt("noteSpeed", 1)) {
                 prefs.edit().putInt("noteSpeed", it).apply()
+            }
+        }
+        divider(gameplay)
+        settingStack(gameplay, "Journey level length", "Highlights keep levels under 2½ minutes") {
+            ui.segmented(listOf("Highlights", "Full song"), if (prefs.getBoolean("shortLevels", true)) 0 else 1) {
+                prefs.edit().putBoolean("shortLevels", it == 0).apply()
             }
         }
         divider(gameplay)
@@ -1603,6 +1610,15 @@ class MainActivity : Activity() {
         io.execute {
             runCatching {
                 val chart = store.chart(song)
+                val excerpt = if (r == null && stage == null && store.prefs.getBoolean("shortLevels", true)) {
+                    val sections = chart.optJSONArray("sections")?.let { values -> (0 until values.length()).map { i ->
+                        val section = values.getJSONObject(i)
+                        AudioChart.Section(section.getDouble("start"), section.getDouble("end"), section.getInt("family"), section.getDouble("intensity"))
+                    } }.orEmpty()
+                    val downbeats = chart.optJSONArray("downbeats")?.let { values -> (0 until values.length()).map { values.getDouble(it) } }.orEmpty()
+                    LevelExcerpt.choose(chart.optDouble("duration", 0.0), sections, downbeats)
+                } else null
+                val playStage = stage ?: excerpt?.let { Stage((it.start * 1000).toInt(), (it.end * 1000).toInt()) }
                 val raw = chart.getJSONArray("notes")
                 val list = ArrayList<GameSession.Note>(raw.length())
                 var previous = -1.0
@@ -1619,9 +1635,9 @@ class MainActivity : Activity() {
                     list.add(GameSession.Note(time, lane, kind, duration, endLane))
                     previous = time
                 }
-                val playable = if (stage != null) Arcade.clip(list, stage.startMs, stage.endMs) else list
+                val playable = if (playStage != null) Arcade.clip(list, playStage.startMs, playStage.endMs, if (r == null) 1.3 else .4) else list
                 check(playable.isNotEmpty()) { "This song has no playable notes." }
-                val decorated = TileVariety.decorate(playable, r?.variety ?: index, seed)
+                val decorated = TileVariety.decorate(playable, r?.variety ?: index, id.hashCode())
                 val layout = TileVariety.shuffleLanes(decorated, kotlin.random.Random(seed), previousLayout)
                 val session = if (r == null) GameSession(layout.notes)
                     else GameSession(layout.notes, r.lives, r.mode != Arcade.Mode.TIME, r.combo)
@@ -1632,7 +1648,7 @@ class MainActivity : Activity() {
                             first + it * 60 / bpm
                         }
                     } ?: DoubleArray(0)
-                val rhythm = Rhythm(beats, chart.optInt("barPhase", 0))
+                val rhythm = Rhythm(beats, chart.optInt("barPhase", 0), chart.optDouble("bpm", 0.0).takeIf { it > 0 } ?: song.optDouble("bpm", 0.0))
                 val path = store.songFile(song, if (song.optBoolean("demo")) "wav" else "mp3").path
                 handler.post {
                     if (operation != op || isDestroyed || run !== r) return@post
@@ -1645,15 +1661,15 @@ class MainActivity : Activity() {
                         prepared.setDataSource(path)
                         prepared.setOnPreparedListener {
                             if (player !== prepared) return@setOnPreparedListener
-                            if (stage != null && stage.startMs > 0) {
+                            if (playStage != null && playStage.startMs > 0) {
                                 prepared.setOnSeekCompleteListener {
                                     if (player === prepared) {
                                         prepared.setOnSeekCompleteListener(null)
-                                        showGame(song, session, MediaClock(prepared), stage, rhythm)
+                                        showGame(song, session, MediaClock(prepared), playStage, rhythm)
                                     }
                                 }
-                                prepared.seekTo(stage.startMs)
-                            } else showGame(song, session, MediaClock(prepared), stage, rhythm)
+                                prepared.seekTo(playStage.startMs)
+                            } else showGame(song, session, MediaClock(prepared), playStage, rhythm)
                         }
                         prepared.setOnErrorListener { _, _, _ ->
                             if (player === prepared) {
@@ -1671,7 +1687,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private class Rhythm(val beats: DoubleArray, val barPhase: Int)
+    private class Rhythm(val beats: DoubleArray, val barPhase: Int, val bpm: Double)
 
     /** Long silent or tile-free outros fade out a few seconds after the last tile instead. */
     private fun outroEnd(session: GameSession, clock: GameClock): Int {
@@ -1690,7 +1706,7 @@ class MainActivity : Activity() {
         val r = run
         val caption =
             when {
-                r == null -> ""
+                r == null -> if (stage != null) "Highlights · up to 2½ minutes" else ""
                 r.mode == Arcade.Mode.ENDLESS ->
                     "Song ${r.songs + 1}  ·  Speed ×" + String.format(Locale.US, "%.2f", r.speed ?: 1f)
                 else -> "Song ${r.songs + 1}  ·  ${song.optString("title")}"
@@ -1704,7 +1720,7 @@ class MainActivity : Activity() {
                 GameView.Options(
                     speed = r?.speed ?: prefs.getFloat("speed", 1f),
                     offsetMs = prefs.getInt("timingOffset", 0),
-                    travel = r?.travel ?: GameView.TRAVEL[prefs.getInt("noteSpeed", 1).coerceIn(0, 2)],
+                    travel = r?.travel ?: GameView.travelForTempo(GameView.TRAVEL[prefs.getInt("noteSpeed", 1).coerceIn(0, 2)], rhythm.bpm),
                     haptics = prefs.getBoolean("haptics", true),
                     hint = r == null && !prefs.getBoolean("tutorialSeen", false),
                     introduce = newKinds(session),

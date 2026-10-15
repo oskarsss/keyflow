@@ -45,7 +45,12 @@ object AudioChart {
         val notes: List<Note>,
         val beats: List<Double> = emptyList(),
         val barPhase: Int = 0,
+        val bpm: Double = 0.0,
+        val downbeats: List<Double> = emptyList(),
+        val sections: List<Section> = emptyList(),
     )
+
+    data class Section(val start: Double, val end: Double, val family: Int, val intensity: Double)
 
     /**
      * [energy] is RMS per [HOP] samples. [flux] is the SuperFlux onset envelope and [pitch] the
@@ -94,7 +99,7 @@ object AudioChart {
     /** Bands from about 150 Hz up describe the pitch of a new note; kick drums sit below. */
     private val MELODIC = BANDS.indexOfFirst { it.first >= 7 }
 
-    private class Fft(private val n: Int) {
+    internal class Fft(private val n: Int) {
         val re = DoubleArray(n)
         val im = DoubleArray(n)
         private val cosines = DoubleArray(n / 2) { cos(2 * PI * it / n) }
@@ -143,7 +148,7 @@ object AudioChart {
         }
     }
 
-    private class FloatList {
+    internal class FloatList {
         var values = FloatArray(4096)
         var size = 0
 
@@ -492,6 +497,14 @@ object AudioChart {
             beats.filter { it in 0.0..duration }.map(::round),
             phase,
         )
+    }
+
+    internal data class Attack(val time: Double, val strength: Double)
+
+    internal fun attacks(samples: Samples): List<Attack> {
+        if (samples.flux.isEmpty()) return emptyList()
+        val local = smooth(samples.flux, (1.5 / TICK).toInt())
+        return pick(samples.flux).map { Attack(tickTime(it), samples.flux[it] / max(local[it], 1e-3)) }
     }
 
     // ------------------------------------------------------------------ analysis

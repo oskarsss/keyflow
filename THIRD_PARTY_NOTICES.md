@@ -38,6 +38,30 @@ The pinned official APK digests are:
 
 The private release provides Keyflow's complete source and build scripts, while these upstream links identify the corresponding unchanged component sources and build recipes. Downloaded playlist music/artwork is user cache content and is not part of source or release assets.
 
+## Beat This! neural rhythm analysis — MIT
+
+The APK includes the published **final0** Beat This! model by Francesco Foscarin, Jan Schlüter and
+Gerhard Widmer (CPJKU), from [the official project](https://github.com/CPJKU/beat_this).
+The upstream code and published weights are MIT-licensed; the full license is in
+`assets/rhythm/BeatThis-LICENSE.txt`.
+
+The fixed 1500-frame dynamic INT8 ONNX conversion is taken from the publicly documented
+[Orchard model export](https://github.com/SFG5453/Orchard/blob/3ae1ec3e5feeca06e2a9ff2b2197917285526179/mobile/docs/BEAT_MODEL.md),
+revision `3ae1ec3e5feeca06e2a9ff2b2197917285526179`. No Orchard application or export-script code is copied.
+The model weights retain the upstream MIT license. The original published checkpoint, conversion
+provenance, frontend contract, byte count and SHA-256 are recorded in `assets/rhythm/model.json`.
+`tools/prepare_rhythm_model.py --check` verifies the committed asset.
+
+ONNX Runtime Android **1.31.0** executes the model locally, on its CPU provider. It is MIT-licensed;
+[corresponding source](https://github.com/microsoft/onnxruntime/tree/v1.31.0), license and bundled
+third-party notices are included in `assets/rhythm/`. The Kotlin Slaney-mel frontend and minimal
+postprocessor follow the published Beat This! contract; musical phrase selection, temporal-median
+sustain checks and two-thumb choreography are original project code.
+
+GTZAN-mini audio and beat annotations are used only as external development evaluation inputs.
+Those audio recordings and the six user-requested evaluation songs are **not** shipped in APKs,
+source archives or repository assets. Only numeric measurement results are committed.
+
 ## MIT license — piano-falling-tiles
 
 Copyright (c) 2025 sandeepsj

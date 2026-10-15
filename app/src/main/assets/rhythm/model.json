@@ -1,0 +1,32 @@
+{
+  "model": "Beat This! final0, dynamic INT8, 1500-frame context",
+  "authors": "Francesco Foscarin, Jan Schlüter, Gerhard Widmer / CPJKU",
+  "source": "https://github.com/CPJKU/beat_this",
+  "license": "MIT (upstream code and published model weights)",
+  "checkpoint": "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/final0.ckpt",
+  "export": "https://github.com/SFG5453/Orchard/blob/3ae1ec3e5feeca06e2a9ff2b2197917285526179/mobile/android/app/src/main/assets/beat_this_int8.onnx",
+  "sha256": "33920bdfe3342cabe0f17350f0e9b3fe1dca6aedca2831a4ad18b45407a41d0d",
+  "bytes": 21068518,
+  "input": {
+    "name": "input_spectrogram",
+    "shape": [
+      1,
+      1500,
+      128
+    ],
+    "sample_rate": 22050,
+    "fft": 1024,
+    "hop": 441,
+    "mel_scale": "slaney",
+    "mel_norm": null,
+    "spectrum": "magnitude / sqrt(1024)",
+    "transform": "log1p(1000 * mel)",
+    "center": true,
+    "padding": "reflect"
+  },
+  "outputs": [
+    "beat",
+    "downbeat"
+  ],
+  "postprocessing": "upstream minimal: 7-frame maxima, logit > 0, adjacent-peak merging, downbeats snapped to beats; 6-frame chunk borders, keep-first overlaps"
+}

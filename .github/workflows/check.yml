@@ -19,6 +19,7 @@ jobs:
           path: artifacts/upstream
           key: ytdlnis-runtimes-${{ hashFiles('tools/prepare_android_runtimes.py') }}
       - uses: gradle/actions/setup-gradle@v4
+      - run: python3 tools/prepare_rhythm_model.py --check
       - run: ./gradlew --refresh-dependencies :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
       - uses: actions/upload-artifact@v4
         with:
