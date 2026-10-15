@@ -294,6 +294,14 @@ class MainActivity : Activity() {
             submit()
             true
         }
+        ui.gap(body, 12)
+        val option = ui.row().apply { setPadding(dp(4), 0, 0, 0) }
+        ui.weight(option, labels("Download all songs", "Play offline without waiting"))
+        ui.gap(option, 12)
+        option.addView(toggle(store.prefs.getBoolean("importDownloadAll", false), "Download all songs") {
+            store.prefs.edit().putBoolean("importDownloadAll", it).apply()
+        })
+        ui.fill(body, option)
         ui.gap(body, 16)
         ui.fill(body, ui.button("Import playlist", Ui.Style.PRIMARY) { submit() })
         if (first) {
@@ -356,6 +364,7 @@ class MainActivity : Activity() {
                             activeImport = null
                             pendingUrl = ""
                             selectPlaylist(playlist)
+                            if (store.prefs.getBoolean("importDownloadAll", false)) downloadAll(playlist)
                         }
                     }
                 }
@@ -383,21 +392,30 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- playlists
 
     private fun showPlaylists() {
+        val y = if (screen == Screen.PLAYLISTS) scroll?.scrollY ?: 0 else 0
         val body = page(Screen.PLAYLISTS, bar("Playlists") { showHome() })
         val currentId = store.playlist?.optString("id")
         val playlists = library.savedPlaylists() + store.demo()
+        playlistSignature = signature(playlists)
         for ((i, playlist) in playlists.withIndex()) {
-            val total = playlist.getJSONArray("songs").length()
+            val songs = playlist.getJSONArray("songs")
+            val total = songs.length()
             val done = store.completedCount(playlist)
             val title = playlist.optString("title")
+            val imported = playlist.optString("id") != ORIGINALS
+            val list = (0 until total).map { songs.getJSONObject(it) }
+            val offline = list.count { store.offline(it) }
+            val busy = list.filter { !store.offline(it) && it.optString("status") in BUSY }
+            val current = playlist.optString("id") == currentId
             val item = ui.row().apply {
-                setPadding(dp(12), dp(12), dp(16), dp(12))
-                ui.pressable(this, ui.rounded(Palette.SURFACE, 18), 18)
+                setPadding(dp(12), dp(12), dp(4), dp(12))
+                ui.pressable(this, ui.rounded(Palette.SURFACE, 18, if (current) Palette.ACCENT else 0), 18)
                 contentDescription = "Open playlist $title"
+                isSelected = current
                 setOnClickListener { selectPlaylist(playlist) }
             }
             val art = artwork(i + 1, 12)
-            val first = playlist.getJSONArray("songs").optJSONObject(0)
+            val first = list.firstOrNull()
             if (first != null && !first.optBoolean("demo"))
                 art.addView(
                     ImageView(this).apply {
@@ -409,19 +427,50 @@ class MainActivity : Activity() {
             item.addView(art, LinearLayout.LayoutParams(dp(52), dp(52)))
             ui.gap(item, 14)
             val info = ui.column()
-            info.addView(ui.oneLine(ui.text(title, 16f, Palette.TEXT, ui.medium)))
+            ui.fill(info, ui.oneLine(ui.text(title, 16f, Palette.TEXT, ui.medium)))
             ui.gap(info, 8)
             val meter = ui.row()
             ui.weight(meter, ui.progress(if (total == 0) 0f else done / total.toFloat(), height = 4))
             ui.gap(meter, 10)
             meter.addView(ui.text("$done/$total", 12f, Palette.MUTED))
             ui.fill(info, meter)
+            if (imported) {
+                ui.gap(info, 6)
+                ui.fill(
+                    info,
+                    ui.text(
+                        when {
+                            offline == total -> "All songs downloaded"
+                            busy.isNotEmpty() -> "Downloading · $offline of $total ready"
+                            else -> "$offline of $total downloaded"
+                        },
+                        12f,
+                        if (offline == total) Palette.MINT else Palette.MUTED,
+                    ),
+                )
+            }
             ui.weight(item, info)
-            ui.gap(item, 12)
-            item.addView(
-                if (playlist.optString("id") == currentId) ui.icon(Glyph.Kind.CHECK, Palette.ACCENT, 22)
-                else ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.FAINT, 20),
-            )
+            ui.gap(item, 4)
+            if (imported) {
+                when {
+                    offline == total -> ui.gap(item, 0)
+                    busy.isNotEmpty() ->
+                        item.addView(
+                            ui.ring(offline / total.toFloat()).apply {
+                                setPadding(dp(13), dp(13), dp(13), dp(13))
+                                contentDescription = "Downloading $title"
+                            },
+                            LinearLayout.LayoutParams(dp(48), dp(48)),
+                        )
+                    else ->
+                        item.addView(ui.iconButton(Glyph.Kind.DOWNLOAD, "Download all songs in $title", Palette.ACCENT) {
+                            downloadAll(playlist)
+                        })
+                }
+                val more = ui.iconButton(Glyph.Kind.MORE, "More options for $title", Palette.MUTED) {}
+                more.setOnClickListener { playlistMenu(more, playlist, offline < total) }
+                item.addView(more)
+            } else item.addView(ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.FAINT, 20), LinearLayout.LayoutParams(dp(48), dp(48)))
             ui.fill(body, item)
             ui.gap(body, 10)
         }
@@ -439,6 +488,141 @@ class MainActivity : Activity() {
         ui.gap(add, 14)
         add.addView(ui.text("Add playlist", 16f, Palette.ACCENT, ui.medium))
         ui.fill(body, add)
+        if (y > 0) scroll?.post { scroll?.scrollTo(0, y) }
+        handler.removeCallbacks(refreshTask)
+        handler.postDelayed(refreshTask, 1500)
+    }
+
+    private var playlistSignature = ""
+    private val refreshTask = Runnable { refreshPlaylists() }
+
+    private fun signature(playlists: List<JSONObject>) =
+        playlists.joinToString("|") { playlist ->
+            val songs = playlist.getJSONArray("songs")
+            val list = (0 until songs.length()).map { songs.getJSONObject(it) }
+            "${playlist.optString("title")}:${list.count { store.offline(it) }}:" +
+                list.count { it.optString("status") in BUSY }
+        }
+
+    /** Keeps download counts on the playlists screen live while songs download. */
+    private fun refreshPlaylists() {
+        if (screen != Screen.PLAYLISTS || !foreground || isDestroyed) return
+        io.execute {
+            val latest = signature(library.savedPlaylists() + store.demo())
+            handler.post {
+                if (screen != Screen.PLAYLISTS || isDestroyed) return@post
+                if (latest != playlistSignature) showPlaylists()
+                else handler.postDelayed(refreshTask, 1500)
+            }
+        }
+    }
+
+    private fun downloadAll(playlist: JSONObject) {
+        val songs = playlist.getJSONArray("songs")
+        val missing = (0 until songs.length()).count { !store.offline(songs.getJSONObject(it)) }
+        if (missing == 0) return
+        val id = playlist.getString("id")
+        Toast.makeText(this, "Downloading $missing songs", Toast.LENGTH_SHORT).show()
+        io.execute {
+            library.markQueued(id)
+            handler.post {
+                DownloadService.start(this, id, all = true)
+                if (screen == Screen.PLAYLISTS) showPlaylists()
+            }
+        }
+    }
+
+    private fun playlistMenu(anchor: View, playlist: JSONObject, canDownload: Boolean) {
+        val menu = android.widget.PopupMenu(this, anchor)
+        menu.menu.add(0, 1, 0, "Rename")
+        if (canDownload) menu.menu.add(0, 2, 1, "Download all songs")
+        menu.menu.add(0, 3, 2, "Delete")
+        menu.setOnMenuItemClickListener {
+            when (it.itemId) {
+                1 -> renamePlaylist(playlist)
+                2 -> downloadAll(playlist)
+                else -> confirmDelete(playlist)
+            }
+            true
+        }
+        menu.show()
+    }
+
+    private fun renamePlaylist(playlist: JSONObject) {
+        val id = playlist.getString("id")
+        val input =
+            EditText(this).apply {
+                setTextColor(Palette.TEXT)
+                setHintTextColor(Palette.FAINT)
+                textSize = 16f
+                isSingleLine = true
+                hint = "Playlist name"
+                setText(playlist.optString("title"))
+                selectAll()
+                filters = arrayOf(android.text.InputFilter.LengthFilter(OnDeviceLibrary.MAX_TITLE))
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                imeOptions = EditorInfo.IME_ACTION_DONE
+                contentDescription = "Playlist name"
+            }
+        val frame = FrameLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(input)
+        }
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle("Rename playlist")
+                .setView(frame)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create()
+        val save = {
+            val title = input.text.toString().trim()
+            if (title.isEmpty()) input.error = "Enter a name"
+            else {
+                dialog.dismiss()
+                val updated = library.rename(id, title)
+                if (store.playlist?.optString("id") == id) store.save(updated)
+                if (screen == Screen.PLAYLISTS) showPlaylists()
+            }
+        }
+        input.setOnEditorActionListener { _, _, _ ->
+            save()
+            true
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { save() }
+            input.requestFocus()
+        }
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
+    }
+
+    private fun confirmDelete(playlist: JSONObject) {
+        val title = playlist.optString("title")
+        AlertDialog.Builder(this)
+            .setTitle("Delete “$title”?")
+            .setMessage("Its levels and downloads are removed from this phone. Scores for its songs stay saved.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ -> deletePlaylist(playlist) }
+            .show()
+    }
+
+    private fun deletePlaylist(playlist: JSONObject) {
+        val id = playlist.getString("id")
+        io.execute {
+            library.deletePlaylist(id)
+            handler.post {
+                if (isDestroyed) return@post
+                if (store.playlist?.optString("id") == id) {
+                    operation++
+                    stopGame()
+                    attemptedPrefetch.clear()
+                    store.save(library.savedPlaylists().firstOrNull() ?: store.demo())
+                }
+                Toast.makeText(this, "Playlist deleted", Toast.LENGTH_SHORT).show()
+                if (screen == Screen.PLAYLISTS) showPlaylists()
+            }
+        }
     }
 
     // ---------------------------------------------------------------- home
@@ -590,9 +774,33 @@ class MainActivity : Activity() {
     private fun heroLabel(song: JSONObject) =
         when {
             store.offline(song) -> "Play"
-            song.optString("status") == "caching" -> "Downloading…"
+            song.optString("status") in BUSY -> downloadStage(song)
             else -> "Download & play"
         }
+
+    /** Overall download progress: the transfer is most of it, then conversion and charting. */
+    private fun downloadFraction(song: JSONObject): Float? {
+        val progress = song.optString("progress")
+        val percent = Regex("([0-9.]+)%").find(progress)?.groupValues?.get(1)?.toFloatOrNull()
+        return when {
+            percent != null -> percent / 100f * .8f
+            progress.contains("MP3") -> .85f
+            progress.contains("beat") || progress.contains("chart") -> .93f
+            else -> null
+        }
+    }
+
+    private fun downloadStage(song: JSONObject): String {
+        val progress = song.optString("progress")
+        val percent = Regex("([0-9]+)(?:\\.[0-9]+)?%").find(progress)?.groupValues?.get(1)
+        return when {
+            song.optString("status") != "caching" -> "Waiting for other downloads"
+            percent != null -> "Downloading $percent%"
+            progress.contains("MP3") -> "Converting audio"
+            progress.contains("beat") || progress.contains("chart") -> "Matching tiles to the beat"
+            else -> "Starting download"
+        }
+    }
 
     /**
      * Levels as a winding path of nodes: cleared ones glow, the next one pulses, and locked ones
@@ -792,11 +1000,9 @@ class MainActivity : Activity() {
         val length = if (secs > 0) String.format(Locale.US, "%d:%02d", secs / 60, secs % 60) else ""
         val status = song.optString("status")
         val offline = store.offline(song)
-        val percent =
-            Regex("([0-9]+)(?:\\.[0-9]+)?%").find(song.optString("progress"))?.groupValues?.get(1)
         row.subtitle.text =
             when {
-                unlocked && !offline && status == "caching" -> if (percent != null) "Downloading $percent%" else "Preparing"
+                unlocked && !offline && status in BUSY -> downloadStage(song)
                 unlocked && !offline && status == "error" -> "Download failed · tap to retry"
                 else -> listOf(song.optString("artist"), length).filter { it.isNotBlank() }.joinToString(" · ")
             }
@@ -804,10 +1010,8 @@ class MainActivity : Activity() {
         val view: View? =
             when {
                 !unlocked || store.completed(song) -> null
-                status == "caching" && !offline ->
-                    ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
-                        indeterminateTintList = ColorStateList.valueOf(Palette.ACCENT)
-                    }
+                status in BUSY && !offline ->
+                    ui.ring(downloadFraction(song)).apply { setPadding(dp(5), dp(5), dp(5), dp(5)) }
                 status == "error" && !offline -> ui.icon(Glyph.Kind.ALERT, Palette.RED, 16)
                 !offline -> ui.icon(Glyph.Kind.DOWNLOAD, Palette.TEXT, 15)
                 else -> ui.icon(Glyph.Kind.PLAY, Palette.ON_ACCENT, 14)
@@ -1203,21 +1407,7 @@ class MainActivity : Activity() {
         }
         divider(gameplay)
         settingRow(gameplay, "Vibration", null) {
-            Switch(this).apply {
-                isChecked = prefs.getBoolean("haptics", true)
-                contentDescription = "Vibration"
-                thumbTintList =
-                    ColorStateList(
-                        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                        intArrayOf(Palette.ACCENT, Palette.MUTED),
-                    )
-                trackTintList =
-                    ColorStateList(
-                        arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                        intArrayOf(0x88A78BFA.toInt(), Palette.STROKE),
-                    )
-                setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("haptics", on).apply() }
-            }
+            toggle(prefs.getBoolean("haptics", true), "Vibration") { prefs.edit().putBoolean("haptics", it).apply() }
         }
 
         val downloads = section(body, "Downloads")
@@ -1261,6 +1451,23 @@ class MainActivity : Activity() {
             },
         )
     }
+
+    private fun toggle(checked: Boolean, label: String, onChange: (Boolean) -> Unit) =
+        Switch(this).apply {
+            isChecked = checked
+            contentDescription = label
+            thumbTintList =
+                ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                    intArrayOf(Palette.ACCENT, Palette.MUTED),
+                )
+            trackTintList =
+                ColorStateList(
+                    arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                    intArrayOf(0x88A78BFA.toInt(), Palette.STROKE),
+                )
+            setOnCheckedChangeListener { _, on -> onChange(on) }
+        }
 
     private fun settingRow(card: LinearLayout, title: String, subtitle: String?, control: () -> View) {
         val row = ui.row().apply { setPadding(dp(18), dp(14), dp(14), dp(14)) }
@@ -1388,10 +1595,10 @@ class MainActivity : Activity() {
         ui.gap(body, 4)
         body.addView(ui.oneLine(ui.text(song.optString("artist"), 14f, Palette.MUTED)))
         ui.gap(body, 32)
-        val bar = spinner()
-        body.addView(bar, LinearLayout.LayoutParams(dp(240), -2))
-        ui.gap(body, 10)
-        val status = ui.text("Downloading", 13f, Palette.MUTED)
+        val bar = ui.meter(.02f, height = 10)
+        body.addView(bar, LinearLayout.LayoutParams(dp(260), -2))
+        ui.gap(body, 12)
+        val status = ui.text("Starting download", 14f, Palette.TEXT, ui.medium)
         body.addView(status)
         DownloadService.start(this, playlistId, song.optString("id"))
         waitForSong(playlistId, song, index, run, status, bar)
@@ -1403,7 +1610,7 @@ class MainActivity : Activity() {
         index: Int,
         run: Int,
         status: TextView,
-        bar: ProgressBar,
+        bar: Ui.Meter,
     ) {
         if (operation != run || isDestroyed) return
         handler.postDelayed(
@@ -1435,18 +1642,14 @@ class MainActivity : Activity() {
                                 showError(IllegalStateException(updated.optString("error")))
                             }
                             else -> {
-                                val progress = updated.optString("progress")
-                                val percent =
-                                    Regex("([0-9.]+)%").find(progress)?.groupValues?.get(1)?.toFloatOrNull()
-                                bar.isIndeterminate = percent == null
-                                if (percent != null) {
-                                    bar.progress = percent.toInt()
-                                    status.text = "Downloading · ${percent.toInt()}%"
-                                } else
-                                    status.text =
-                                        if (progress.contains("pattern")) "Building the level"
-                                        else if (progress.contains("MP3")) "Preparing audio"
-                                        else "Downloading"
+                                val target = downloadFraction(updated)
+                                if (target != null && target > bar.fraction)
+                                    android.animation.ValueAnimator.ofFloat(bar.fraction, target).apply {
+                                        duration = 500
+                                        addUpdateListener { bar.fraction = it.animatedValue as Float }
+                                        start()
+                                    }
+                                status.text = downloadStage(updated)
                                 waitForSong(playlistId, song, index, run, status, bar)
                             }
                         }
@@ -1462,7 +1665,8 @@ class MainActivity : Activity() {
         currentSong = song
         currentIndex = index
         runCatching {
-                val notes = store.chart(song).getJSONArray("notes")
+                val chart = store.chart(song)
+                val notes = chart.getJSONArray("notes")
                 val list = ArrayList<GameSession.Note>()
                 var previous = -1.0
                 for (i in 0 until notes.length()) {
@@ -1506,10 +1710,20 @@ class MainActivity : Activity() {
                 prepared.setDataSource(
                     store.songFile(song, if (song.optBoolean("demo")) "wav" else "mp3").path,
                 )
+                val beats = chart.optJSONArray("beats")?.let { list -> DoubleArray(list.length()) { list.getDouble(it) } }
+                    ?: song.optDouble("bpm", 0.0).takeIf { it > 0 }?.let { bpm ->
+                        // Built-in songs are composed on a grid from their first note.
+                        val first = list.firstOrNull()?.time ?: 0.0
+                        DoubleArray(((chart.optDouble("duration", 0.0) - first) * bpm / 60).toInt().coerceAtLeast(0)) {
+                            first + it * 60 / bpm
+                        }
+                    }
+                    ?: DoubleArray(0)
+                val rhythm = Rhythm(beats, chart.optInt("barPhase", 0))
                 prepared.setOnPreparedListener {
                     if (player !== prepared) return@setOnPreparedListener
                     if (stage != null && stage.startMs > 0) prepared.seekTo(stage.startMs)
-                    showGame(song, session, MediaClock(prepared), stage)
+                    showGame(song, session, MediaClock(prepared), stage, rhythm)
                 }
                 prepared.setOnErrorListener { _, _, _ ->
                     stopGame()
@@ -1532,7 +1746,16 @@ class MainActivity : Activity() {
             }
     }
 
-    private fun showGame(song: JSONObject, session: GameSession, clock: GameClock, stage: Stage?) {
+    private class Rhythm(val beats: DoubleArray, val barPhase: Int)
+
+    /** Long silent or tile-free outros fade out a few seconds after the last tile instead. */
+    private fun outroEnd(session: GameSession, clock: GameClock): Int {
+        val last = session.notes.maxOfOrNull { it.time + it.duration } ?: return 0
+        val end = (last * 1000).toInt() + 3500
+        return if (clock.durationMs > 0 && end < clock.durationMs - 1500) end else 0
+    }
+
+    private fun showGame(song: JSONObject, session: GameSession, clock: GameClock, stage: Stage?, rhythm: Rhythm) {
         screen = Screen.GAME
         rows.clear()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1561,11 +1784,13 @@ class MainActivity : Activity() {
                     hint = r == null && !prefs.getBoolean("tutorialSeen", false),
                     introduce = newKinds(session),
                     startMs = stage?.startMs ?: 0,
-                    endMs = stage?.endMs ?: 0,
+                    endMs = stage?.endMs?.takeIf { it > 0 } ?: outroEnd(session, clock),
                     timeLimitMs = if (r?.mode == Arcade.Mode.TIME) r.timeLeftMs else 0,
                     baseScore = r?.score ?: 0,
                     caption = caption,
                     segmentDone = if (r != null) "Next song!" else "Song complete!",
+                    beats = rhythm.beats,
+                    barPhase = rhythm.barPhase,
                 ),
                 object : GameView.Listener {
                     override fun finished(session: GameSession) {
@@ -1919,6 +2144,9 @@ class MainActivity : Activity() {
 
     companion object {
         private const val ORIGINALS = "keyflow-originals"
+
+        /** Song states that mean a download is underway or waiting its turn. */
+        private val BUSY = setOf("caching", "queued")
         private const val CHORD = "chord"
     }
 }

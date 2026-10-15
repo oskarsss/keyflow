@@ -2,6 +2,7 @@ package com.keyflow.pianotiles
 
 import com.keyflow.pianotiles.downloader.YTDLRequest
 import java.io.ByteArrayInputStream
+import kotlin.math.abs
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -59,13 +60,62 @@ class OnDeviceImportTest {
         assertTrue(chart.notes.all { it.lane in 0..3 })
     }
 
+    /** 120 BPM: a quiet intro, a steady verse, a loud chorus, a silent break and a drop. */
+    private fun song(): ByteArray {
+        val rate = AudioChart.RATE
+        val seconds = 64
+        val noise = kotlin.random.Random(1)
+        val bytes = ByteArray(rate * seconds * 2)
+        for (i in 0 until rate * seconds) {
+            val t = i / rate.toDouble()
+            val beat = t % .5
+            val half = (t + .25) % .5
+            val (kick, hat, pad) =
+                when {
+                    t < 8 -> Triple(if (t % 2 < .5) .25 else 0.0, 0.0, .05)
+                    t < 24 -> Triple(.5, 0.0, .08)
+                    t < 40 -> Triple(.9, .35, .12)
+                    t < 48 -> Triple(0.0, 0.0, 0.0)
+                    else -> Triple(1.0, .45, .15)
+                }
+            var v = pad * kotlin.math.sin(2 * Math.PI * 220 * t)
+            if (beat < .12) v += kick * kotlin.math.exp(-beat * 30) * kotlin.math.sin(2 * Math.PI * 60 * beat)
+            if (half < .04) v += hat * kotlin.math.exp(-half * 80) * (noise.nextDouble() * 2 - 1)
+            val sample = (v.coerceIn(-1.0, 1.0) * 30000).toInt()
+            bytes[i * 2] = sample.toByte()
+            bytes[i * 2 + 1] = (sample shr 8).toByte()
+        }
+        return bytes
+    }
+
     @Test
-    fun gesturePhrasesDoNotOverlapFollowingNotes() {
-        val notes = (0 until 60).map { AudioChart.Note(1.5 + it * .4, it % 4) }
-        val gestures = AudioChart.gestures(notes)
-        assertEquals(setOf("tap", "hold", "slide"), gestures.map { it.kind }.toSet())
-        for ((note, next) in gestures.zipWithNext()) assertTrue(
-            note.time + note.duration < next.time,
-        )
+    fun chartsFollowTheBeatRestInSilenceAndBuildChordsWhenLoud() {
+        val samples = AudioChart.readPcm(ByteArrayInputStream(song()))
+        val chart = AudioChart.generate(samples, "beat-song")
+        assertEquals(chart, AudioChart.generate(samples, "beat-song"))
+        assertEquals("beat-grid", chart.method)
+        val notes = chart.notes
+        assertTrue(notes.zipWithNext().all { (a, b) -> a.time <= b.time })
+        assertTrue(notes.all { it.lane in 0..3 && it.endLane in 0..3 })
+        // Tiles sit on beats or half-beats of the 120 BPM click.
+        for (note in notes) {
+            val off = note.time % .25
+            assertTrue("${note.time} is off the beat", minOf(off, .25 - off) < .05)
+        }
+        val moments = notes.groupBy { it.time }.toSortedMap()
+        for (group in moments.values) assertEquals(group.size, group.map { it.lane }.toSet().size)
+        for ((a, b) in moments.entries.zipWithNext()) {
+            val end = a.key + a.value.maxOf { it.duration }
+            assertTrue("${a.key} overlaps ${b.key}", end < b.key)
+            assertTrue(b.key - a.key >= .18)
+        }
+        assertTrue(notes.none { it.time in 40.6..47.5 })
+        fun rate(from: Double, to: Double) = moments.keys.count { it in from..to } / (to - from)
+        assertTrue(rate(26.0, 39.0) > rate(10.0, 23.0))
+        assertTrue(rate(10.0, 23.0) > rate(2.0, 7.5))
+        assertTrue(moments.values.any { it.size >= 2 })
+        assertTrue(moments.filterKeys { it in 47.5..52.5 }.values.any { it.size >= 3 })
+        assertTrue(notes.any { it.kind != "tap" })
+        assertTrue(abs(chart.beats.zipWithNext { a, b -> b - a }.average() - .5) < .02)
     }
 }

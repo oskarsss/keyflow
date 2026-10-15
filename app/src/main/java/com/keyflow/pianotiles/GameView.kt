@@ -21,6 +21,10 @@ interface GameClock {
     val durationMs: Int
     val isPlaying: Boolean
 
+    /** True once playback reached the end, even if the reported position falls short of it. */
+    val completed: Boolean
+        get() = false
+
     fun start(speed: Float)
 
     fun volume(level: Float) {}
@@ -29,6 +33,14 @@ interface GameClock {
 }
 
 class MediaClock(val player: MediaPlayer) : GameClock {
+    @Volatile override var completed = false
+        private set
+
+    init {
+        // VBR MP3 durations are estimates, so the position alone cannot tell when a song is over.
+        player.setOnCompletionListener { completed = true }
+    }
+
     override val positionMs
         get() = player.currentPosition
 
@@ -83,6 +95,9 @@ class GameView(
         /** Shown under the countdown, such as "Song 3 · Speed ×1.10". */
         val caption: String = "",
         val segmentDone: String = "Song complete!",
+        /** Beat times in song seconds for the rushing beat lines; every fourth from [barPhase] is a bar. */
+        val beats: DoubleArray = DoubleArray(0),
+        val barPhase: Int = 0,
     )
 
     interface Listener {
@@ -200,6 +215,9 @@ class GameView(
         get() = options.timeLimitMs > 0 && timeLeftMs <= 0
 
     private var lastTick = 0L
+
+    /** When playback stopped on its own; a song that stops for good has ended. */
+    private var silentSince = 0L
 
     // ------------------------------------------------------------------ perspective
 
@@ -389,20 +407,23 @@ class GameView(
             lastTick = now
         } else lastTick = 0
         if (rolling && options.endMs > 0) {
-            // Fade arcade segments in and out instead of cutting the music.
+            // Fade segments and long outros out instead of cutting the music.
             val position = clock.positionMs
-            clock.volume(
-                minOf(1f, (position - options.startMs) / 700f, (options.endMs - position) / 1500f)
-                    .coerceIn(0f, 1f),
-            )
+            val fadeIn = if (options.startMs > 0) (position - options.startMs) / 700f else 1f
+            clock.volume(minOf(1f, fadeIn, (options.endMs - position) / 1500f).coerceIn(0f, 1f))
         }
+        if (rolling && !clock.isPlaying) {
+            if (silentSince == 0L) silentSince = now
+        } else silentSince = 0
         if (running && started && endingAt == 0L) {
             session.advance(time)
             if (
                 session.failed() ||
                     timedOut ||
+                    clock.completed ||
                     (options.endMs > 0 && clock.positionMs >= options.endMs) ||
-                    (!clock.isPlaying && clock.positionMs >= clock.durationMs - 100)
+                    (!clock.isPlaying && clock.positionMs >= clock.durationMs - 100) ||
+                    (silentSince > 0 && now - silentSince > 900)
             ) {
                 endingAt = now
                 rolling = false
@@ -560,16 +581,23 @@ class GameView(
             paint.color = 0x14FFFFFF
             canvas.drawRect(i * lane, worldY(.3f), (i + 1) * lane, line, paint)
         }
-        // Beat lines rushing toward the player give a sense of speed.
-        var t = ceil(time / BEAT) * BEAT
-        paint.strokeWidth = dp(1.6f)
-        while (t < time + options.travel * 1.05) {
-            val p = progress(t)
-            if (p >= 0) {
-                paint.color = alpha(if (fever) 0x55FCD34D else 0x33A78BFA, 1 - p * .8f)
-                canvas.drawLine(0f, worldY(p), w, worldY(p), paint)
+        // Beat lines rushing toward the player follow the song's own beat; bar lines are brighter.
+        val beats = options.beats
+        if (beats.isNotEmpty()) {
+            while (beatIndex > 0 && beats[beatIndex - 1] >= time) beatIndex--
+            while (beatIndex < beats.size && beats[beatIndex] < time) beatIndex++
+            var k = beatIndex
+            while (k < beats.size && beats[k] < time + options.travel * 1.05) {
+                val bar = (k - options.barPhase).mod(4) == 0
+                beatLine(canvas, progress(beats[k]), fever, bar)
+                k++
             }
-            t += BEAT
+        } else {
+            var t = ceil(time / BEAT) * BEAT
+            while (t < time + options.travel * 1.05) {
+                beatLine(canvas, progress(t), fever, false)
+                t += BEAT
+            }
         }
         canvas.restore()
         if (session.lives <= 2 && endingAt == 0L) {
@@ -588,6 +616,24 @@ class GameView(
         }
     }
 
+    private var beatIndex = 0
+
+    private fun beatLine(canvas: Canvas, p: Float, fever: Boolean, bar: Boolean) {
+        if (p < 0) return
+        paint.strokeWidth = dp(if (bar) 3f else 1.6f)
+        val color = if (fever) 0x55FCD34D else if (bar) 0x5CA78BFA else 0x30A78BFA
+        paint.color = alpha(color, 1 - p * .8f)
+        canvas.drawLine(0f, worldY(p), w, worldY(p), paint)
+    }
+
+    /** 1 right on a beat, fading to 0 shortly after, so the strike line pulses with the music. */
+    private fun pulse(time: Double): Float {
+        val beats = options.beats
+        if (beats.isEmpty() || beatIndex == 0) return 0f
+        val since = time - beats[beatIndex - 1]
+        return (1 - since / .22).toFloat().coerceIn(0f, 1f)
+    }
+
     private fun drawNotes(canvas: Canvas, time: Double, now: Long) {
         val travel = options.travel
         while (
@@ -604,7 +650,7 @@ class GameView(
         for (i in last - 1 downTo renderIndex) {
             val note = session.notes[i]
             if (!visible(note, time)) continue
-            if (note.kind == "hold" || note.kind == "slide") drawRail(canvas, note, time)
+            if (note.kind == "hold" || note.kind == "slide") drawRail(canvas, note, time, now)
             else drawTile(canvas, note, time, now, i)
         }
         canvas.restore()
@@ -634,34 +680,17 @@ class GameView(
         note.judgement != 1 && note.judgement != 2 && note.judgement != GameSession.DODGED &&
             note.time + note.duration - time >= -.6
 
-    private fun drawTile(canvas: Canvas, note: GameSession.Note, time: Double, now: Long, index: Int) {
-        val pb = progress(note.time)
-        val missed = note.judgement == 3
-        val fog = 1 - ((pb - .78f) / .3f).coerceIn(0f, 1f)
-        val fade = if (missed) (1 + pb / .3f).coerceIn(0f, 1f) else 1f
-        val a = fog * fade
-        if (a <= 0f || pb < -.45f) return
-        val lane = w / 4
-        val l = note.lane * lane + lane * .07f
-        val r = (note.lane + 1) * lane - lane * .07f
-        val yb = worldY(pb)
-        val yt = worldY(pb + TILE)
-        val radius = dp(9f)
-        val (colors, side) =
-            when {
-                missed -> intArrayOf(0xFF3A1A2A.toInt(), 0xFF6B2A3F.toInt(), 0xFF9F3550.toInt()) to 0xFF2A0F18.toInt()
-                note.kind == GameSession.GOLD ->
-                    intArrayOf(0xFFB7791F.toInt(), 0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()) to 0xFF7A4E0E.toInt()
-                note.kind == GameSession.AVOID ->
-                    intArrayOf(0xFF1C0A12.toInt(), 0xFF3B1022.toInt(), 0xFF6B1530.toInt()) to 0xFF12060B.toInt()
-                else -> intArrayOf(0xFF4A2FC0.toInt(), 0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()) to 0xFF2B1B78.toInt()
-            }
-        // Side face below the tile gives it visible thickness.
+    private class Look(val colors: IntArray, val side: Int)
+
+    private fun fog(p: Float) = 1 - ((p - .78f) / .3f).coerceIn(0f, 1f)
+
+    /** A thick tile: a side face below gives it height, the top face is lit toward the player. */
+    private fun block(canvas: Canvas, l: Float, r: Float, yb: Float, yt: Float, look: Look, a: Float, thick: Float = dp(11f)) {
+        val radius = minOf(dp(9f), (yb - yt) / 2)
         paint.shader = null
-        paint.color = alpha(side, a)
-        canvas.drawRoundRect(l + dp(1f), yb - radius, r - dp(1f), yb + dp(11f), radius, radius, paint)
-        // Top face with a vertical gradient, brightest nearest the player.
-        val shader = faceShader(colors[1] xor colors[2], colors)
+        paint.color = alpha(look.side, a)
+        canvas.drawRoundRect(l + dp(1f), yb - radius, r - dp(1f), yb + thick, radius, radius, paint)
+        val shader = faceShader(look.colors[1] xor look.colors[2], look.colors)
         matrix.setScale(1f, yb - yt)
         matrix.postTranslate(0f, yt)
         shader.setLocalMatrix(matrix)
@@ -679,6 +708,28 @@ class GameView(
         }
         paint.shader = null
         paint.alpha = 255
+    }
+
+    private fun drawTile(canvas: Canvas, note: GameSession.Note, time: Double, now: Long, index: Int) {
+        val pb = progress(note.time)
+        val missed = note.judgement == 3
+        val fade = if (missed) (1 + pb / .3f).coerceIn(0f, 1f) else 1f
+        val a = fog(pb) * fade
+        if (a <= 0f || pb < -.45f) return
+        val lane = w / 4
+        val l = note.lane * lane + lane * .07f
+        val r = (note.lane + 1) * lane - lane * .07f
+        val yb = worldY(pb)
+        val yt = worldY(pb + TILE)
+        val radius = dp(9f)
+        val look =
+            when {
+                missed -> MISSED
+                note.kind == GameSession.GOLD -> GOLD
+                note.kind == GameSession.AVOID -> BOMB
+                else -> TAP
+            }
+        block(canvas, l, r, yb, yt, look, a)
         val delta = note.time - time
         val danger = note.kind == GameSession.AVOID
         if (!missed && (danger || abs(delta) <= GameSession.WINDOW)) {
@@ -692,7 +743,7 @@ class GameView(
             paint.color = alpha(0x99FFFFFF.toInt(), a)
             canvas.drawRoundRect(l + lane * .2f, yb - dp(14f), r - lane * .2f, yb - dp(10f), dp(2f), dp(2f), paint)
         }
-        // Chords: link tiles that share a moment so two fingers feel natural.
+        // Chords: link tiles that share a moment so several fingers feel natural.
         val next = session.notes.getOrNull(index + 1)
         if (
             next != null && abs(next.time - note.time) < .001 && next.kind != GameSession.AVOID &&
@@ -705,70 +756,160 @@ class GameView(
         }
     }
 
-    private fun drawRail(canvas: Canvas, note: GameSession.Note, time: Double) {
+    private var lastSpark = 0L
+
+    /**
+     * Holds and slides: a tile to press, a glowing ribbon to follow and a cap where it ends. While
+     * held, the grip stays on the strike line and the ribbon is consumed into it.
+     */
+    private fun drawRail(canvas: Canvas, note: GameSession.Note, time: Double, now: Long) {
         val active = note.judgement == 4
         val missed = note.judgement == 3
-        val color = if (missed) 0xFF6B4252.toInt() else if (note.kind == "hold") Palette.MINT else Palette.SKY
-        val start = if (active) maxOf(time, note.time) else note.time
-        val end = note.time + note.duration
+        val slide = note.kind == "slide"
+        val color = if (missed) 0xFF6B4252.toInt() else if (slide) Palette.SKY else Palette.MINT
+        val look = if (missed) MISSED else if (slide) SLIDE else HOLD
         val lane = w / 4
-        val p0 = maxOf(progress(start), if (active) 0f else -.45f)
-        val p1 = minOf(progress(end), 1.1f)
-        if (p1 < p0) return
-        val x0 = note.laneAt(start) * lane
-        // Slides move linearly between lanes, so in world space the rail is a straight segment.
-        val tEnd = if (p1 < progress(end)) time + p1 * options.travel else end
-        val x1 = note.laneAt(tEnd) * lane
-        val y0 = worldY(p0)
-        val y1 = worldY(p1)
-        val fog = maxOf(.3f, 1 - ((p0 - .78f) / .3f).coerceIn(0f, 1f))
-        paint.shader = null
-        paint.style = Paint.Style.STROKE
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.color = alpha(color, (if (active) .42f else .26f) * fog)
-        paint.strokeWidth = lane * .72f
-        canvas.drawLine(x0, y0, x1, y1, paint)
-        paint.color = alpha(color, fog)
-        paint.strokeWidth = dp(5f)
-        canvas.drawLine(x0, y0, x1, y1, paint)
-        if (note.kind == "slide" && note.endLane != note.lane && !missed) {
-            // Chevrons show which way to slide.
-            val dir = if (note.endLane > note.lane) 1f else -1f
-            paint.strokeWidth = dp(3f)
-            paint.color = 0xE6FFFFFF.toInt()
-            var n = 0
-            for (k in 1..5) {
-                val f = k / 6f
-                val cxw = x0 + (x1 - x0) * f
-                val cyw = y0 + (y1 - y0) * f
-                val s = dp(7f)
-                lineBuffer[n++] = cxw - dir * s; lineBuffer[n++] = cyw - s
-                lineBuffer[n++] = cxw + dir * s * .6f; lineBuffer[n++] = cyw
-                lineBuffer[n++] = cxw + dir * s * .6f; lineBuffer[n++] = cyw
-                lineBuffer[n++] = cxw - dir * s; lineBuffer[n++] = cyw + s
+        val end = note.time + note.duration
+        val pHead = progress(note.time)
+        val pEnd = progress(end)
+        val fade = if (missed) (1 + pEnd / .3f).coerceIn(0f, 1f) * .7f else 1f
+        if (fade <= 0f) return
+        val p0 = if (active) 0f else maxOf(pHead, -.45f)
+        val p1 = minOf(pEnd, 1.1f)
+        if (p1 > p0) {
+            val x0 = note.laneAt(time + p0 * options.travel) * lane
+            val x1 = note.laneAt(time + p1 * options.travel) * lane
+            val y0 = worldY(p0)
+            val y1 = worldY(p1)
+            val half = lane * (if (slide) .3f else .26f)
+            path.reset()
+            path.moveTo(x0 - half, y0)
+            path.lineTo(x0 + half, y0)
+            path.lineTo(x1 + half, y1)
+            path.lineTo(x1 - half, y1)
+            path.close()
+            val body =
+                faceShader(color xor 0x5A5A5A, intArrayOf(alpha(color, .04f), alpha(color, .3f), alpha(color, .55f)))
+            matrix.setScale(1f, maxOf(1f, y0 - y1))
+            matrix.postTranslate(0f, y1)
+            body.setLocalMatrix(matrix)
+            paint.shader = body
+            paint.color = Color.WHITE
+            paint.alpha = ((if (active) 1f else .8f) * fade * 255).toInt()
+            canvas.drawPath(path, paint)
+            paint.shader = null
+            paint.alpha = 255
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.strokeWidth = dp(2f)
+            paint.color = alpha(color, .85f * fade)
+            canvas.drawLine(x0 - half, y0, x1 - half, y1, paint)
+            canvas.drawLine(x0 + half, y0, x1 + half, y1, paint)
+            paint.strokeWidth = dp(if (active) 6f else 3.5f)
+            paint.color =
+                if (active) alpha(Color.WHITE, .7f + .3f * sin(now / 60f)) else alpha(color, .9f * fade)
+            canvas.drawLine(x0, y0, x1, y1, paint)
+            if (!missed) {
+                // Slides point the way with chevrons; holds tick on the song's beats.
+                paint.strokeWidth = dp(3f)
+                paint.color = alpha(Color.WHITE, .85f * fade)
+                var n = 0
+                if (slide && note.endLane != note.lane) {
+                    val dir = if (note.endLane > note.lane) 1f else -1f
+                    for (k in 1..5) {
+                        val t = note.time + note.duration * k / 6
+                        val p = progress(t)
+                        if (p <= p0 || p >= p1) continue
+                        val cxw = note.laneAt(t) * lane
+                        val cyw = worldY(p)
+                        val c = dp(8f)
+                        lineBuffer[n++] = cxw - dir * c; lineBuffer[n++] = cyw - c
+                        lineBuffer[n++] = cxw + dir * c * .6f; lineBuffer[n++] = cyw
+                        lineBuffer[n++] = cxw + dir * c * .6f; lineBuffer[n++] = cyw
+                        lineBuffer[n++] = cxw - dir * c; lineBuffer[n++] = cyw + c
+                    }
+                } else {
+                    paint.strokeWidth = dp(2f)
+                    paint.color = alpha(Color.WHITE, .45f * fade)
+                    val beats = options.beats
+                    var k = if (beats.isEmpty()) 0 else beats.binarySearch(note.time).let { if (it < 0) -it - 1 else it + 1 }
+                    var t = if (beats.isEmpty()) note.time + BEAT else beats.getOrElse(k) { end }
+                    while (t < end - .05 && n + 4 <= lineBuffer.size) {
+                        val p = progress(t)
+                        if (p > p0 && p < p1) {
+                            val cxw = note.laneAt(t) * lane
+                            lineBuffer[n++] = cxw - half * .7f; lineBuffer[n++] = worldY(p)
+                            lineBuffer[n++] = cxw + half * .7f; lineBuffer[n++] = worldY(p)
+                        }
+                        t = if (beats.isEmpty()) t + BEAT else beats.getOrElse(++k) { end }
+                    }
+                }
+                if (n > 0) canvas.drawLines(lineBuffer, 0, n, paint)
             }
-            canvas.drawLines(lineBuffer, 0, n, paint)
+            paint.style = Paint.Style.FILL
         }
-        paint.style = Paint.Style.FILL
-        paint.color = color
-        canvas.drawCircle(x1, y1, lane * .12f, paint)
+        if (pEnd <= 1.08f) {
+            val xe = note.laneAt(end) * lane
+            block(canvas, xe - lane * .36f, xe + lane * .36f, worldY(pEnd), worldY(pEnd + TILE * .28f), look, fog(pEnd) * fade, dp(6f))
+        }
         if (active) {
-            paint.color = alpha(color, .3f)
-            canvas.drawCircle(x0, y0, lane * .42f, paint)
+            // The grip rides the strike line, sparkling while the finger stays on it.
+            val x = note.laneAt(time) * lane
+            block(canvas, x - lane * .43f, x + lane * .43f, line, worldY(TILE * .5f), look, 1f)
+            paint.color = alpha(Color.WHITE, .25f + .2f * sin(now / 50f))
+            canvas.drawRoundRect(x - lane * .43f, worldY(TILE * .5f), x + lane * .43f, line, dp(9f), dp(9f), paint)
+            val l = (x / lane).toInt().coerceIn(0, 3)
+            laneGlowAt[l] = now - 120
+            laneGlowColor[l] = color
+            if (now - lastSpark > 55) {
+                lastSpark = now
+                particles.emit(x, line, color, density, 3)
+            }
+        } else if (pHead >= -.45f) {
+            val l = note.lane * lane + lane * .07f
+            val r = (note.lane + 1) * lane - lane * .07f
+            val yb = worldY(pHead)
+            val yt = worldY(pHead + TILE)
+            val a = fog(pHead) * fade
+            block(canvas, l, r, yb, yt, look, a)
+            if (!missed) {
+                val mx = (l + r) / 2
+                val my = (yb + yt) / 2
+                paint.style = Paint.Style.STROKE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = dp(3.5f)
+                paint.color = alpha(Color.WHITE, .9f * a)
+                if (slide) {
+                    val dir = if (note.endLane > note.lane) 1f else -1f
+                    val c = lane * .14f
+                    canvas.drawLine(mx - dir * c, my - c, mx + dir * c * .4f, my, paint)
+                    canvas.drawLine(mx + dir * c * .4f, my, mx - dir * c, my + c, paint)
+                } else {
+                    val c = lane * .16f
+                    canvas.drawLine(mx - c, my - dp(5f), mx + c, my - dp(5f), paint)
+                    canvas.drawLine(mx - c, my + dp(5f), mx + c, my + dp(5f), paint)
+                }
+                if (abs(note.time - time) <= GameSession.WINDOW) {
+                    paint.strokeWidth = dp(3f)
+                    paint.color = 0xE6FFFFFF.toInt()
+                    canvas.drawRoundRect(rect, dp(9f), dp(9f), paint)
+                }
+                paint.style = Paint.Style.FILL
+            }
         }
-        paint.color = alpha(color, fog)
-        canvas.drawCircle(x0, y0, lane * .24f, paint)
-        paint.color = 0xFF14121D.toInt()
-        canvas.drawCircle(x0, y0, lane * .09f, paint)
     }
 
     private fun drawStrike(canvas: Canvas, now: Long, h: Float) {
+        val beat = if (rolling) pulse(songTime) else 0f
         paint.shader = strikeGlow
         paint.color = Color.WHITE
-        canvas.drawRect(0f, line - dp(46f), w, line, paint)
+        paint.alpha = (150 + 105 * beat).toInt()
+        canvas.drawRect(0f, line - dp(46f + 14f * beat), w, line, paint)
         paint.shader = null
+        paint.alpha = 255
         paint.color = 0xFFEDE9FE.toInt()
-        canvas.drawRoundRect(0f, line - dp(2f), w, line + dp(2f), dp(2f), dp(2f), paint)
+        val bar = dp(2f + 1.5f * beat)
+        canvas.drawRoundRect(0f, line - bar, w, line + bar, dp(2f), dp(2f), paint)
         val lane = w / 4
         for (i in 0..3) {
             var pressed = false
@@ -790,8 +931,8 @@ class GameView(
             }
             paint.color = if (pressed) 0x66FFFFFF else 0x14FFFFFF
             canvas.drawRoundRect(l + dp(1f), t + dp(1f), r - dp(1f), t + dp(3f), dp(2f), dp(2f), paint)
-            paint.color = if (pressed) Palette.ACCENT else 0x40A78BFA
-            canvas.drawCircle((l + r) / 2, (t + b) / 2, dp(4f), paint)
+            paint.color = if (pressed) Palette.ACCENT else alpha(Palette.ACCENT, .25f + .55f * beat)
+            canvas.drawCircle((l + r) / 2, (t + b) / 2, dp(4f + 1.5f * beat), paint)
         }
     }
 
@@ -908,7 +1049,7 @@ class GameView(
                 when (kind) {
                     GameSession.GOLD -> Triple("Gold tile", "Bonus points and a life back", intArrayOf(0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()))
                     GameSession.AVOID -> Triple("Bomb tile", "Don't touch it", intArrayOf(0xFF3B1022.toInt(), 0xFF6B1530.toInt()))
-                    else -> Triple("Chord", "Two tiles at once, use two fingers", intArrayOf(0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()))
+                    else -> Triple("Chord", "Linked tiles: tap them all together", intArrayOf(0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()))
                 }
             val left = cx - dp(140f)
             paint.color = 0xE61A1727.toInt()
@@ -1020,6 +1161,13 @@ class GameView(
 
         /** Beat-line spacing in song seconds. */
         private const val BEAT = .5
+
+        private val TAP = Look(intArrayOf(0xFF4A2FC0.toInt(), 0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()), 0xFF2B1B78.toInt())
+        private val GOLD = Look(intArrayOf(0xFFB7791F.toInt(), 0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()), 0xFF7A4E0E.toInt())
+        private val BOMB = Look(intArrayOf(0xFF1C0A12.toInt(), 0xFF3B1022.toInt(), 0xFF6B1530.toInt()), 0xFF12060B.toInt())
+        private val MISSED = Look(intArrayOf(0xFF3A1A2A.toInt(), 0xFF6B2A3F.toInt(), 0xFF9F3550.toInt()), 0xFF2A0F18.toInt())
+        private val HOLD = Look(intArrayOf(0xFF0F5F59.toInt(), 0xFF14B8A6.toInt(), 0xFFB5F5EA.toInt()), 0xFF0A3D3A.toInt())
+        private val SLIDE = Look(intArrayOf(0xFF0B4A7A.toInt(), 0xFF0EA5E9.toInt(), 0xFFC7ECFF.toInt()), 0xFF082F4F.toInt())
 
         /** Song-seconds a tile spends falling, for the Slow / Normal / Fast note speeds. */
         val TRAVEL = doubleArrayOf(2.2, 1.7, 1.3)

@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger
 class DownloadService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     private val queued = mutableMapOf<String, Boolean>()
+
+    /** Queue order; a song the player is waiting for jumps to the front. */
+    private val order = ArrayDeque<String>()
     private val pending = AtomicInteger()
     private lateinit var library: OnDeviceLibrary
 
@@ -36,11 +39,21 @@ class DownloadService : Service() {
             return START_NOT_STICKY
         }
         val selected = intent.getStringExtra("songId")
+        val all = intent.getBooleanExtra("all", false)
         val songs = playlist.getJSONArray("songs")
         val store = LibraryStore(this)
         val ids =
-            if (selected != null) listOf(selected)
-            else store.upcoming(playlist).map { it.getString("id") }
+            when {
+                selected != null -> listOf(selected)
+                // The whole playlist, starting from the next level to play.
+                all -> {
+                    val order = (0 until songs.length()).map { songs.getJSONObject(it) }
+                    val from = order.indexOfFirst { !store.completed(it) }.coerceAtLeast(0)
+                    (order.drop(from) + order.take(from)).map { it.getString("id") }
+                }
+                else -> store.upcoming(playlist).map { it.getString("id") }
+            }
+        val requestedNow = selected != null || all
         for (songId in ids) {
             val song =
                 (0 until songs.length())
@@ -52,23 +65,27 @@ class DownloadService : Service() {
             val added = synchronized(queued) {
                 if (queued.containsKey(key)) {
                     // A tap must promote an automatic request even if the preload limit changed.
-                    if (selected != null) queued[key] = true
+                    if (requestedNow) queued[key] = true
+                    if (selected != null && order.remove(key)) order.addFirst(key)
                     false
                 } else {
-                    queued[key] = selected != null
+                    queued[key] = requestedNow
+                    if (selected != null) order.addFirst(key) else order.addLast(key)
                     true
                 }
             }
             if (!added) continue
             pending.incrementAndGet()
             executor.execute {
-                runCatching {
-                    val latest = library.snapshot(id)
-                    val requested = synchronized(queued) { queued[key] == true }
+                val next = synchronized(queued) { order.removeFirstOrNull() }
+                if (next != null) runCatching {
+                    val (generation, playlistId, songId) = next.split(":", limit = 3)
+                    val latest = library.snapshot(playlistId)
+                    val requested = synchronized(queued) { queued[next] == true }
                     if (requested || latest != null && store.upcoming(latest).any { it.getString("id") == songId })
-                        library.cacheSong(id, songId, generation, ::updateNotification)
+                        library.cacheSong(playlistId, songId, generation.toLong(), ::updateNotification)
                 }
-                synchronized(queued) { queued.remove(key) }
+                synchronized(queued) { queued.remove(next) }
                 if (pending.decrementAndGet() == 0) android.os.Handler(mainLooper).post {
                     if (pending.get() == 0) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
                 }
@@ -113,10 +130,11 @@ class DownloadService : Service() {
     companion object {
         private const val CHANNEL = "downloads"
 
-        fun start(context: Context, playlistId: String, songId: String? = null) {
+        fun start(context: Context, playlistId: String, songId: String? = null, all: Boolean = false) {
             context.startForegroundService(
                 Intent(context, DownloadService::class.java)
                     .putExtra("playlistId", playlistId)
+                    .putExtra("all", all)
                     .apply { if (songId != null) putExtra("songId", songId) },
             )
         }

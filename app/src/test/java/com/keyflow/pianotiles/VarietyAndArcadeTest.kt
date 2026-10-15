@@ -36,6 +36,23 @@ class VarietyAndArcadeTest {
     }
 
     @Test
+    fun chartedChordsGrowWithTheLevel() {
+        val base = (0 until 40).flatMap { i ->
+            val time = 1.0 + i
+            if (i % 4 == 0) (0..3).map { GameSession.Note(time, it) } else listOf(GameSession.Note(time, i % 4))
+        }
+        fun largest(level: Int) = TileVariety.decorate(base, level, 3)
+            .filter { it.kind != GameSession.AVOID }
+            .groupBy { it.time }.values.maxOf { it.size }
+        assertEquals(2, largest(0))
+        assertEquals(3, largest(1))
+        assertEquals(4, largest(5))
+        // Charted chords are kept as they are; no random extra chords are mixed in.
+        val decorated = TileVariety.decorate(base, 5, 3).filter { it.kind != GameSession.AVOID }
+        assertEquals(base.size, decorated.size)
+    }
+
+    @Test
     fun bombsCostALifeWhenTouchedAndNothingWhenDodged() {
         val game =
             GameSession(

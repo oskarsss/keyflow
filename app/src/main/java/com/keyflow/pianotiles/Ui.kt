@@ -222,6 +222,41 @@ class Ui(val context: Context) {
         }
     }
 
+    /** Circular download progress; a null fraction spins while the size is still unknown. */
+    class Ring(context: Context, private val color: Int) : View(context) {
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        var fraction: Float? = null
+            set(value) {
+                field = value
+                invalidate()
+            }
+
+        init {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            val stroke = minOf(width, height) * .12f
+            paint.strokeWidth = stroke
+            val inset = stroke / 2 + paddingLeft
+            val box = android.graphics.RectF(inset, inset, width - inset, height - inset)
+            paint.color = Palette.STROKE
+            canvas.drawOval(box, paint)
+            paint.color = color
+            val f = fraction
+            if (f == null) {
+                val start = (android.os.SystemClock.uptimeMillis() % 1000) * .36f
+                canvas.drawArc(box, start, 90f, false, paint)
+                postInvalidateOnAnimation()
+            } else canvas.drawArc(box, -90f, 360f * f.coerceIn(.02f, 1f), false, paint)
+        }
+    }
+
+    fun ring(fraction: Float?, color: Int = Palette.ACCENT) = Ring(context, color).apply { this.fraction = fraction }
+
     fun meter(fraction: Float, color: Int = Palette.ACCENT, height: Int = 8) =
         Meter(context, dp(height), color).apply { this.fraction = fraction }
 

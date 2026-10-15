@@ -70,10 +70,14 @@ class LibraryStore(private val context: Context) {
         }
     }
 
-    fun chart(song: JSONObject) = JSONObject(songFile(song, "json").readText())
+    /** Charts are versioned, so downloaded songs are re-charted when the generator improves. */
+    fun chartFile(song: JSONObject) =
+        songFile(song, if (song.optBoolean("demo")) "json" else "chart$CHART_VERSION.json")
+
+    fun chart(song: JSONObject) = JSONObject(chartFile(song).readText())
 
     fun offline(song: JSONObject) =
-        song.optBoolean("demo") || (songFile(song, "mp3").isFile && songFile(song, "json").isFile)
+        song.optBoolean("demo") || (songFile(song, "mp3").isFile && chartFile(song).isFile)
 
     fun preloadCount(collection: JSONObject): Int = prefs.getInt(
         "preload.${collection.optString("id")}", collection.optInt("preloadCount", 3),
@@ -120,6 +124,8 @@ class LibraryStore(private val context: Context) {
     }
 
     companion object {
+        const val CHART_VERSION = 3
+
         /** Level n starts at 150·(n−1)² XP. */
         fun level(xp: Int) = 1 + kotlin.math.sqrt(xp / 150.0).toInt()
 

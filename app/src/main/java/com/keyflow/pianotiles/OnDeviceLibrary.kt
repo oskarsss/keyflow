@@ -28,7 +28,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             for (i in 0 until songs.length()) {
                 val song = songs.getJSONObject(i)
                 if (store.offline(song)) song.put("status", "ready")
-                else if (song.optString("status") in listOf("ready", "caching")) {
+                else if (song.optString("status") in listOf("ready", "caching", "queued")) {
                     song.put("status", "pending")
                     song.remove("progress")
                 }
@@ -103,9 +103,13 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         check(songs.isNotEmpty()) {
             "No playable songs found. Check your playlist link or update the downloader in Play settings."
         }
+        // Imports keep their source title, numbered when it is already taken.
+        val base = raw.optString("title").trim().ifBlank { "My playlist" }.take(MAX_TITLE)
+        val taken = savedPlaylists().map { it.optString("title") }.toSet()
+        val title = generateSequence(1) { it + 1 }.map { if (it == 1) base else "$base $it" }.first { it !in taken }
         return JSONObject()
             .put("id", UUID.randomUUID().toString())
-            .put("title", raw.optString("title", "My playlist"))
+            .put("title", title)
             .put("songs", JSONArray(songs.shuffled(random)))
             .put("preloadCount", 3)
             .also(::save)
@@ -130,6 +134,42 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             .mapNotNull { snapshot(it.nameWithoutExtension) }
             .filter { it.optString("id").isNotBlank() && it.optJSONArray("songs") != null }
             .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
+    }
+
+    /** Marks every song still to download, so the queue is visible before each one starts. */
+    fun markQueued(id: String) = synchronized(lock) {
+        val playlist = snapshot(id) ?: return@synchronized
+        val songs = playlist.getJSONArray("songs")
+        for (i in 0 until songs.length()) {
+            val song = songs.getJSONObject(i)
+            if (!store.offline(song) && song.optString("status") != "caching")
+                song.put("status", "queued").remove("error")
+        }
+        save(playlist)
+    }
+
+    fun rename(id: String, title: String): JSONObject = synchronized(lock) {
+        val playlist = requireNotNull(snapshot(id)) { "Playlist not found." }
+        playlist.put("title", title.trim().take(MAX_TITLE))
+        save(playlist)
+        playlist
+    }
+
+    /** Removes a collection and any downloads no other collection uses. Scores stay per song. */
+    fun deletePlaylist(id: String) {
+        val removed = synchronized(lock) { snapshot(id).also { index(id).delete() } } ?: return
+        val kept = savedPlaylists().flatMap { playlist ->
+            val songs = playlist.getJSONArray("songs")
+            (0 until songs.length()).map { songs.getJSONObject(it).optString("id") }
+        }.toSet()
+        val songs = removed.getJSONArray("songs")
+        for (i in 0 until songs.length()) {
+            val song = songs.getJSONObject(i)
+            if (song.optString("id") in kept || song.optBoolean("demo")) continue
+            for (file in listOf(store.songFile(song, "mp3"), store.chartFile(song), store.songFile(song, "json"), store.songFile(song, "jpg")))
+                file.delete()
+        }
+        store.prefs.edit().remove("preload.$id").apply()
     }
 
     fun setPreload(id: String, count: Int): JSONObject = synchronized(lock) {
@@ -185,6 +225,29 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             updateSong(playlistId, songId) { it.put("status", "ready") }
             return
         }
+        val downloaded = store.songFile(song, "mp3")
+        if (downloaded.isFile) {
+            // Audio from an earlier version only needs a new chart.
+            updateSong(playlistId, songId) {
+                it.put("status", "caching").put("error", "").put("progress", "Building a new chart…")
+            }
+            progress("Finding the rhythm in $title…")
+            val chart = try {
+                writeChart(song, downloaded, songId)
+            } catch (error: Throwable) {
+                updateSong(playlistId, songId) {
+                    it.put("status", "error").put("error", error.message ?: "Chart failed. Please retry.")
+                }
+                throw error
+            }
+            updateSong(playlistId, songId) {
+                it.put("status", "ready")
+                    .put("duration", chart.duration)
+                    .put("chartMethod", chart.method)
+                    .put("progress", "Offline ready")
+            }
+            return
+        }
         updateSong(playlistId, songId) {
             it.put("status", "caching")
                 .put("error", "")
@@ -236,35 +299,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
             progress("Finding the rhythm in $title…")
             updateSong(playlistId, songId) {
-                it.put("progress", "Building tap, hold and slide patterns…")
+                it.put("progress", "Matching tiles to the beat…")
             }
-            val samples = runtime.audioSamples(audio, "chart-$songId", AudioChart::readPcm)
-            val chart = AudioChart.generate(samples, songId)
-            val notes = JSONArray()
-            for (note in chart.notes) notes.put(
-                JSONObject()
-                    .put("time", note.time)
-                    .put("lane", note.lane)
-                    .put("kind", note.kind)
-                    .put("duration", note.duration)
-                    .put("endLane", note.endLane),
-            )
+            val chart = writeChart(song, audio, songId)
             val metadata = JSONObject(File(folder, "source.info.json").readText())
-            val chartFile = store.songFile(song, "json")
-            File(chartFile.path + ".part")
-                .apply {
-                    writeText(
-                        JSONObject()
-                            .put("version", 2)
-                            .put("duration", chart.duration)
-                            .put("method", chart.method)
-                            .put("notes", notes)
-                            .toString(),
-                    )
-                }
-                .let {
-                    Files.move(it.toPath(), chartFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
             Files.move(
                 audio.toPath(),
                 store.songFile(song, "mp3").toPath(),
@@ -309,6 +347,37 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
     }
 
+    private fun writeChart(song: JSONObject, audio: File, songId: String): AudioChart.Chart {
+        val samples = runtime.audioSamples(audio, "chart-$songId", AudioChart::readPcm)
+        val chart = AudioChart.generate(samples, songId)
+        val notes = JSONArray()
+        for (note in chart.notes) notes.put(
+            JSONObject()
+                .put("time", note.time)
+                .put("lane", note.lane)
+                .put("kind", note.kind)
+                .put("duration", note.duration)
+                .put("endLane", note.endLane),
+        )
+        val chartFile = store.chartFile(song)
+        File(chartFile.path + ".part")
+            .apply {
+                writeText(
+                    JSONObject()
+                        .put("version", LibraryStore.CHART_VERSION)
+                        .put("duration", chart.duration)
+                        .put("method", chart.method)
+                        .put("beats", JSONArray(chart.beats))
+                        .put("barPhase", chart.barPhase)
+                        .put("notes", notes)
+                        .toString(),
+                )
+            }
+            .let { Files.move(it.toPath(), chartFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+        store.songFile(song, "json").delete()
+        return chart
+    }
+
     private fun updateSong(playlistId: String, songId: String, update: (JSONObject) -> Unit) =
         synchronized(lock) {
             val playlist = requireNotNull(snapshot(playlistId))
@@ -324,6 +393,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     }
 
     companion object {
+        const val MAX_TITLE = 60
+
         @Volatile private var instance: OnDeviceLibrary? = null
 
         fun get(context: Context): OnDeviceLibrary =

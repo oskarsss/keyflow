@@ -78,7 +78,7 @@ class ImportedPlaylistTest {
         song.put("title", "Downloaded title").put("artist", "Downloaded artist")
             .put("duration", 123).put("chartMethod", "energy-onsets")
         store.songFile(song, "mp3").writeText("cached audio")
-        store.songFile(song, "json").writeText("{\"duration\":123,\"notes\":[]}")
+        store.chartFile(song).writeText("{\"duration\":123,\"notes\":[]}")
         library.save(first)
         // A collection imported before the download finished still has source metadata.
         val stale = JSONObject(first.toString()).put("id", "stale-metadata").put("title", "Z mix")
@@ -109,7 +109,7 @@ class ImportedPlaylistTest {
         songs.getJSONObject(1).put("status", "ready")
         val cached = songs.getJSONObject(2)
         store.songFile(cached, "mp3").writeText("audio")
-        store.songFile(cached, "json").writeText("{}")
+        store.chartFile(cached).writeText("{}")
         library.save(playlist)
         val recovered = OnDeviceLibrary(context).snapshot(playlist.getString("id"))!!
         assertEquals(ids(playlist), ids(recovered))
@@ -130,7 +130,7 @@ class ImportedPlaylistTest {
         library.setPreload(playlist.getString("id"), 2)
         val cached = songs.getJSONObject(2)
         store.songFile(cached, "mp3").writeText("audio")
-        store.songFile(cached, "json").writeText("{}")
+        store.chartFile(cached).writeText("{}")
         assertEquals(ids(playlist).subList(2, 4), store.upcoming(playlist).map { it.getString("id") })
         library.setPreload(playlist.getString("id"), 0)
         assertTrue(store.upcoming(playlist).isEmpty())
@@ -149,7 +149,7 @@ class ImportedPlaylistTest {
         library.createPlaylist(raw(), Random(6))
         val song = first.getJSONArray("songs").getJSONObject(0)
         store.songFile(song, "mp3").writeText("audio")
-        store.songFile(song, "json").writeText("{}")
+        store.chartFile(song).writeText("{}")
         song.put("status", "ready").put("progress", "Offline ready").put("error", "Old error")
         library.save(first)
         store.prefs.edit().putInt("song.${song.getString("id")}.score", 1000).commit()
@@ -188,5 +188,35 @@ class ImportedPlaylistTest {
         val library = OnDeviceLibrary(context)
         assertThrows(IllegalStateException::class.java) { library.createPlaylist(JSONObject()) }
         assertTrue(library.savedPlaylists().isEmpty())
+    }
+
+    @Test
+    fun renamingKeepsSongsAndDeletingKeepsDownloadsOtherPlaylistsUse() {
+        val library = OnDeviceLibrary(context)
+        val first = library.createPlaylist(raw(), Random(1))
+        val second = library.createPlaylist(
+            JSONObject().put("title", "Other").put("entries", JSONArray().put(
+                JSONObject().put("id", "songid00000").put("title", "Shared"),
+            )),
+            Random(2),
+        )
+        val renamed = library.rename(first.getString("id"), "  Road trip  ")
+        assertEquals("Road trip", renamed.getString("title"))
+        assertEquals(ids(first), ids(library.snapshot(first.getString("id"))!!))
+
+        val shared = JSONObject().put("id", "songid00000")
+        val own = JSONObject().put("id", "songid00001")
+        for (song in listOf(shared, own)) {
+            store.songFile(song, "mp3").writeText("audio")
+            store.chartFile(song).writeText("{}")
+        }
+        store.prefs.edit().putBoolean("song.songid00001.completed", true).commit()
+        library.deletePlaylist(first.getString("id"))
+        assertNull(library.snapshot(first.getString("id")))
+        assertEquals(listOf(second.getString("id")), library.savedPlaylists().map { it.getString("id") })
+        assertTrue(store.offline(shared))
+        assertFalse(store.songFile(own, "mp3").exists())
+        assertFalse(store.chartFile(own).exists())
+        assertTrue(store.completed(own))
     }
 }

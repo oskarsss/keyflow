@@ -20,10 +20,10 @@ class HitParticles {
         var color = 0
     }
 
-    private val particles = Array(50) { Particle() }
+    private val particles = Array(80) { Particle() }
 
-    fun emit(x: Float, y: Float, color: Int, density: Float) {
-        repeat(12) {
+    fun emit(x: Float, y: Float, color: Int, density: Float, count: Int = 12) {
+        repeat(count) {
             val particle = particles.firstOrNull { it.life <= 0 } ?: return
             val angle = Random.nextFloat() * Math.PI.toFloat() * 2
             val speed = (1 + Random.nextFloat() * 3) * density
