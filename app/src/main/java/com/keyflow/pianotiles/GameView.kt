@@ -1123,8 +1123,7 @@ class GameView(
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
                     pointerLanes.put(id, (event.getX(i) / laneWidth).toInt().coerceIn(0, 3))
-                    val judgement = session.move(id, event.getX(i) / laneWidth, time)
-                    if (judgement in 1..2) result = judgement
+                    session.move(id, event.getX(i) / laneWidth, time)
                 }
             }
             MotionEvent.ACTION_UP,

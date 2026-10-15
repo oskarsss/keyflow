@@ -131,12 +131,50 @@ class GameSessionTest {
     }
 
     @Test
-    fun EmptyDraggingDoesNotCostLives() {
+    fun emptyDraggingDoesNotHitTilesOrCostLives() {
         val game = GameSession(listOf(GameSession.Note(5.0, 1)))
         assertEquals(0, game.move(1, .5f, 1.0))
         assertEquals(0, game.misses)
-        assertEquals(1, game.move(1, 1.5f, 5.0))
+        assertEquals(0, game.move(1, 1.5f, 5.0))
+        assertEquals(0, game.hits)
+        assertEquals(1, game.press(1, 5.0, 1))
         assertEquals(1, game.hits)
+    }
+
+    @Test
+    fun completedGestureCannotDragIntoTheNextTile() {
+        for (kind in listOf("hold", "slide")) {
+            for (nextKind in listOf("tap", GameSession.GOLD, GameSession.AVOID)) {
+                val endLane = if (kind == "slide") 3 else 0
+                val next = GameSession.Note(2.1, endLane, nextKind)
+                val game = GameSession(listOf(GameSession.Note(1.0, 0, kind, 1.0, endLane), next))
+                game.press(0, 1.0, 7)
+                for (i in 1..20) game.move(7, .5f + endLane * i / 20f, 1.0 + i * .05)
+                assertEquals(1, game.hits)
+                // More MOVE events arrive while the finger is still down, inside the next window.
+                repeat(3) { assertEquals(0, game.move(7, endLane + .5f, 2.02 + it * .01)) }
+                assertEquals(0, next.judgement)
+                assertEquals(0, game.misses)
+                game.release(7, 2.05)
+                assertEquals(if (nextKind == GameSession.AVOID) 3 else 1, game.press(endLane, 2.1, 7))
+            }
+        }
+    }
+
+    @Test
+    fun failedGestureCannotDragIntoAnotherTileAndOtherFingersStillWork() {
+        val next = GameSession.Note(1.6, 0)
+        val chord = GameSession.Note(1.1, 2)
+        val game = GameSession(listOf(GameSession.Note(1.0, 0, "slide", 1.0, 3), chord, next))
+        game.press(0, 1.0, 7)
+        assertEquals(1, game.press(2, 1.1, 8))
+        game.advance(1.3)
+        game.advance(1.5)
+        assertEquals(1, game.misses)
+        assertEquals(0, game.move(7, .5f, 1.55))
+        assertEquals(0, next.judgement)
+        game.release(7, 1.56)
+        assertEquals(1, game.press(0, 1.6, 7))
     }
 
     @Test

@@ -93,7 +93,7 @@ class OnDeviceImportTest {
         val samples = AudioChart.readPcm(ByteArrayInputStream(song()))
         val chart = AudioChart.generate(samples, "beat-song")
         assertEquals(chart, AudioChart.generate(samples, "beat-song"))
-        assertEquals("beat-grid", chart.method)
+        assertEquals("onsets", chart.method)
         val notes = chart.notes
         assertTrue(notes.zipWithNext().all { (a, b) -> a.time <= b.time })
         assertTrue(notes.all { it.lane in 0..3 && it.endLane in 0..3 })

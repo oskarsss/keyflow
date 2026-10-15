@@ -161,13 +161,13 @@ class GameSession(
     }
 
     fun move(pointer: Int, position: Float, time: Double): Int {
-        val gesture = active[pointer]
-        if (gesture != null) {
-            gesture.position = position
-            advance(time)
-            return 4
-        }
-        return press(position.toInt().coerceIn(0, 3), time, pointer, position, penalize = false)
+        // A held finger only owns the gesture it started. After the tail completes (or fails),
+        // subsequent MOVE events must not consume a following tile inside its early hit window.
+        // Every new tile needs its own DOWN, including when another pointer is still holding.
+        val gesture = active[pointer] ?: return 0
+        gesture.position = position
+        advance(time)
+        return 4
     }
 
     fun release(pointer: Int, time: Double) {
