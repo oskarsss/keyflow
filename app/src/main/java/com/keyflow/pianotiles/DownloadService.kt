@@ -13,8 +13,16 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** A visible on-device queue survives leaving the game or locking the phone. */
 class DownloadService : Service() {
-    private val executor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newSingleThreadExecutor { task ->
+        Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "song-preparation")
+    }
+    private val planner = Executors.newSingleThreadExecutor { task ->
+        Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "preparation-requests")
+    }
+    private val planning = AtomicInteger()
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val queued = mutableMapOf<String, Boolean>()
+    private val ranks = mutableMapOf<String, Int>()
 
     /** Queue order; a song the player is waiting for jumps to the front. */
     private val order = ArrayDeque<String>()
@@ -31,16 +39,39 @@ class DownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(15, notification("Preparing your playlist…"))
+        startForeground(15, notification())
+        planning.incrementAndGet()
+        planner.execute {
+            try { runCatching { enqueue(intent) }.onFailure {
+                android.util.Log.w("Keyflow", "Song preparation request failed", it)
+            } } finally {
+                planning.decrementAndGet()
+                main.post(::stopIfIdle)
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun stopIfIdle() {
+        if (planning.get() == 0 && pending.get() == 0) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun enqueue(intent: Intent?) {
         val id = intent?.getStringExtra("playlistId")
         val playlist = id?.let(library::snapshot)
-        if (playlist == null) {
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
+        if (playlist == null) return
         val selected = intent.getStringExtra("songId")
+        val rank = when {
+            selected == null -> 0
+            intent.getBooleanExtra("background", false) -> 1
+            else -> 2
+        }
         val all = intent.getBooleanExtra("all", false)
         val songs = playlist.getJSONArray("songs")
+        val byId = (0 until songs.length()).map { songs.getJSONObject(it) }.associateBy { it.getString("id") }
         val store = LibraryStore(this)
         val ids =
             when {
@@ -55,22 +86,26 @@ class DownloadService : Service() {
             }
         val requestedNow = selected != null || all
         for (songId in ids) {
-            val song =
-                (0 until songs.length())
-                    .map { songs.getJSONObject(it) }
-                    .firstOrNull { it.getString("id") == songId } ?: continue
+            val song = byId[songId] ?: continue
             if (store.offline(song)) continue
             val generation = library.cacheGeneration
             val key = "$generation:$id:$songId"
             val added = synchronized(queued) {
+                fun insert() {
+                    val before = order.indexOfFirst { (ranks[it] ?: 0) < rank }
+                    if (before < 0) order.addLast(key) else order.add(before, key)
+                }
                 if (queued.containsKey(key)) {
-                    // A tap must promote an automatic request even if the preload limit changed.
                     if (requestedNow) queued[key] = true
-                    if (selected != null && order.remove(key)) order.addFirst(key)
+                    if (rank > (ranks[key] ?: 0)) {
+                        ranks[key] = rank
+                        if (order.remove(key)) insert()
+                    }
                     false
                 } else {
                     queued[key] = requestedNow
-                    if (selected != null) order.addFirst(key) else order.addLast(key)
+                    ranks[key] = rank
+                    insert()
                     true
                 }
             }
@@ -83,22 +118,16 @@ class DownloadService : Service() {
                     val latest = library.snapshot(playlistId)
                     val requested = synchronized(queued) { queued[next] == true }
                     if (requested || latest != null && store.upcoming(latest).any { it.getString("id") == songId })
-                        library.cacheSong(playlistId, songId, generation.toLong(), ::updateNotification)
+                        library.cacheSong(playlistId, songId, generation.toLong()) {}
                 }
-                synchronized(queued) { queued.remove(next) }
-                if (pending.decrementAndGet() == 0) android.os.Handler(mainLooper).post {
-                    if (pending.get() == 0) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-                }
+                synchronized(queued) { queued.remove(next); ranks.remove(next) }
+                pending.decrementAndGet()
+                main.post(::stopIfIdle)
             }
         }
-        if (pending.get() == 0) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
-        }
-        return START_NOT_STICKY
     }
 
-    private fun notification(message: String): Notification {
+    private fun notification(): Notification {
         val open =
             PendingIntent.getActivity(
                 this,
@@ -108,21 +137,18 @@ class DownloadService : Service() {
             )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("Keyflow · Saving your music")
-            .setContentText(message.take(180))
+            .setContentTitle("Keyflow · Preparing music")
+            .setContentText("Getting your next songs ready")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
     }
 
-    private fun updateNotification(message: String) {
-        getSystemService(NotificationManager::class.java).notify(15, notification(message))
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        planner.shutdown()
         executor.shutdown()
         super.onDestroy()
     }
@@ -130,11 +156,12 @@ class DownloadService : Service() {
     companion object {
         private const val CHANNEL = "downloads"
 
-        fun start(context: Context, playlistId: String, songId: String? = null, all: Boolean = false) {
+        fun start(context: Context, playlistId: String, songId: String? = null, all: Boolean = false, background: Boolean = false) {
             context.startForegroundService(
                 Intent(context, DownloadService::class.java)
                     .putExtra("playlistId", playlistId)
                     .putExtra("all", all)
+                    .putExtra("background", background)
                     .apply { if (songId != null) putExtra("songId", songId) },
             )
         }

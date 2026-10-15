@@ -18,6 +18,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     private val indexes = File(context.filesDir, "playlists").apply { mkdirs() }
     private val lock = Any()
     private val cacheLock = Any()
+    private val playing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile internal var cacheGeneration = 0L
         private set
 
@@ -37,23 +38,36 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
     }
 
-    fun importPlaylist(value: String, id: String, progress: (String) -> Unit): JSONObject {
+    fun importPlaylist(value: String, id: String, progress: (String) -> Unit): JSONObject =
+        createPlaylist(readPlaylist(value, id, progress))
+
+    /** Read the complete source before asking for approval or saving a collection. */
+    internal fun readPlaylist(value: String, id: String, progress: (String) -> Unit): JSONObject {
         val url = PlaylistUrl.normalize(value)
         progress("Reading your playlist on this phone…")
-        val request =
-            YTDLRequest(url)
-                .addOption("--flat-playlist")
-                .addOption("--dump-single-json")
-                .addOption("--yes-playlist")
-                .addOption("--playlist-end", 200)
-                .addOption("--socket-timeout", 20)
-        val raw =
-            JSONObject(
-                runtime
-                    .execute(request, id, 180) { if (it.startsWith("Preparing")) progress(it) }
-                    .out,
-            )
-        return createPlaylist(raw)
+        val request = YTDLRequest(url)
+            .addOption("--flat-playlist")
+            .addOption("--dump-single-json")
+            .addOption("--yes-playlist")
+            .addOption("--socket-timeout", 20)
+        // Large playlists can exceed the runtime's bounded diagnostic output buffer.
+        val metadata = File.createTempFile("playlist-", ".json", context.cacheDir)
+        try {
+            runtime.execute(request, id, 600, outputFile = metadata) {
+                if (it.startsWith("Preparing")) progress(it)
+            }
+            return JSONObject(metadata.readText())
+        } finally {
+            metadata.delete()
+        }
+    }
+
+    internal fun importSongCount(raw: JSONObject): Int = importEntries(raw).count()
+
+    private fun importEntries(raw: JSONObject): Sequence<JSONObject> {
+        val entries = raw.optJSONArray("entries") ?: JSONArray()
+        return (0 until entries.length()).asSequence().mapNotNull(entries::optJSONObject)
+            .filter { it.optString("id").matches(SONG_ID) }.distinctBy { it.getString("id") }
     }
 
     /** Import a one-time song list into a new collection; the source is never its identity. */
@@ -62,13 +76,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             val songs = playlist.getJSONArray("songs")
             (0 until songs.length()).map { songs.getJSONObject(it) }
         }.sortedBy { it.has("chartMethod") }.associateBy { it.optString("id") }
-        val entries = raw.optJSONArray("entries") ?: JSONArray()
         val songs = mutableListOf<JSONObject>()
-        val seen = mutableSetOf<String>()
-        for (i in 0 until entries.length()) {
-            val entry = entries.optJSONObject(i) ?: continue
-            val sid = entry.optString("id")
-            if (!sid.matches(Regex("[A-Za-z0-9_-]{11}")) || !seen.add(sid)) continue
+        for (entry in importEntries(raw)) {
+            val sid = entry.getString("id")
             val song =
                 JSONObject()
                     .put("id", sid)
@@ -134,6 +144,48 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             .mapNotNull { snapshot(it.nameWithoutExtension) }
             .filter { it.optString("id").isNotBlank() && it.optJSONArray("songs") != null }
             .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
+    }
+
+    /** Called from background preparation; shared songs appear only once. */
+    fun arcadeSongs(): List<Arcade.Entry> = savedPlaylists().flatMap { playlist ->
+        val songs = playlist.getJSONArray("songs")
+        (0 until songs.length()).map { Arcade.Entry(playlist.getString("id"), songs.getJSONObject(it)) }
+    }.distinctBy { it.id }
+
+    fun protectPlayback(id: String) { playing.add(id) }
+    fun releasePlayback(id: String) { playing.remove(id) }
+
+    /** Disk cleanup never changes playlists, scores or progression, or removes a playing song. */
+    fun pruneUnused(days: Int, now: Long = System.currentTimeMillis()): Int = synchronized(cacheLock) {
+        require(days in 1..365)
+        if (!store.prefs.getBoolean("smartStorage", true)) return@synchronized 0
+        val cutoff = now - days * 86_400_000L
+        val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
+        var removed = 0
+        for (entry in arcadeSongs()) {
+            if (!store.prefs.getBoolean("smartStorage", true)) break
+            if (entry.demo || entry.id in playing || entry.id in store.prefs.getStringSet("arcade.reserve", emptySet()).orEmpty()) continue
+            val audio = store.songFile(entry.song, "mp3")
+            if (!audio.isFile) continue
+            // A fresh download gets a full retention period, even if it was played long ago.
+            val lastUse = maxOf(store.lastPlayed(entry.song), audio.lastModified())
+            if (lastUse >= cutoff) continue
+            if (entry.id in playing || entry.id in store.prefs.getStringSet("arcade.reserve", emptySet()).orEmpty()) continue
+            files[entry.id].orEmpty().forEach { it.delete() }
+            removed++
+        }
+        if (removed > 0) synchronized(lock) {
+            for (playlist in savedPlaylists()) {
+                val songs = playlist.getJSONArray("songs")
+                for (i in 0 until songs.length()) {
+                    val song = songs.getJSONObject(i)
+                    if (!store.offline(song) && song.optString("status") == "ready")
+                        song.put("status", "pending").remove("progress")
+                }
+                save(playlist)
+            }
+        }
+        removed
     }
 
     /** Marks every song still to download, so the queue is visible before each one starts. */
@@ -236,7 +288,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 writeChart(song, downloaded, songId)
             } catch (error: Throwable) {
                 updateSong(playlistId, songId) {
-                    it.put("status", "error").put("error", error.message ?: "Chart failed. Please retry.")
+                    it.put("status", "error").put("failedAt", System.currentTimeMillis())
+                        .put("error", error.message ?: "Chart failed. Please retry.")
                 }
                 throw error
             }
@@ -341,6 +394,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             File(folder, "download.log").writeText(error.message ?: "Download failed")
             updateSong(playlistId, songId) {
                 it.put("status", "error")
+                    .put("failedAt", System.currentTimeMillis())
                     .put("error", error.message?.takeLast(2000) ?: "Download failed. Please retry.")
             }
             throw error
@@ -393,14 +447,16 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     }
 
     companion object {
+        private val SONG_ID = Regex("[A-Za-z0-9_-]{11}")
         const val MAX_TITLE = 60
 
         @Volatile private var instance: OnDeviceLibrary? = null
 
-        fun get(context: Context): OnDeviceLibrary =
-            instance
-                ?: synchronized(this) {
-                    instance ?: OnDeviceLibrary(context.applicationContext).also { instance = it }
-                }
+        fun get(context: Context): OnDeviceLibrary {
+            val app = context.applicationContext
+            return instance?.takeIf { it.context === app } ?: synchronized(this) {
+                instance?.takeIf { it.context === app } ?: OnDeviceLibrary(app).also { instance = it }
+            }
+        }
     }
 }

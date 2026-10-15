@@ -14,6 +14,45 @@ import kotlin.random.Random
  * holds, slides or neighbouring taps.
  */
 object TileVariety {
+    class Layout(val notes: List<GameSession.Note>, val key: Int)
+
+    private val permutations: List<List<Int>> = (0..3).flatMap { a ->
+        (0..3).filter { it != a }.flatMap { b ->
+            (0..3).filter { it != a && it != b }.map { c -> listOf(a, b, c, 6 - a - b - c) }
+        }
+    }
+
+    /** Change lanes each play, retaining rhythm, chords and collision-free gesture paths. */
+    fun shuffleLanes(source: List<GameSession.Note>, random: Random, previous: Int = -1): Layout {
+        fun safe(map: List<Int>): Boolean {
+            for ((i, note) in source.withIndex()) {
+                if (note.duration <= 0) continue
+                val occupied = minOf(map[note.lane], map[note.endLane])..maxOf(map[note.lane], map[note.endLane])
+                val original = minOf(note.lane, note.endLane)..maxOf(note.lane, note.endLane)
+                var first = i
+                while (first > 0 && source[first - 1].time == note.time) first--
+                for (j in first until source.size) {
+                    if (j == i) continue
+                    val other = source[j]
+                    if (other.time >= note.time + note.duration) break
+                    val remapped = minOf(map[other.lane], map[other.endLane])..maxOf(map[other.lane], map[other.endLane])
+                    val old = minOf(other.lane, other.endLane)..maxOf(other.lane, other.endLane)
+                    if (occupied.first <= remapped.last && remapped.first <= occupied.last &&
+                        !(original.first <= old.last && old.first <= original.last)) return false
+                }
+            }
+            return true
+        }
+        val allowed = permutations.indices.filter { safe(permutations[it]) }
+        val old = permutations.getOrNull(previous)
+        val used = source.flatMap { listOf(it.lane, it.endLane) }.toSet()
+        val key = allowed.filter { candidate -> old == null || used.any { permutations[candidate][it] != old[it] } }
+            .ifEmpty { allowed }.random(random)
+        val map = permutations[key]
+        return Layout(source.map { GameSession.Note(it.time, map[it.lane], it.kind, it.duration, map[it.endLane]) }
+            .sortedWith(compareBy({ it.time }, { it.lane })), key)
+    }
+
     fun decorate(source: List<GameSession.Note>, level: Int, seed: Int): List<GameSession.Note> {
         val random = Random(seed)
         val limit = maxChord(level)
@@ -51,6 +90,13 @@ object TileVariety {
                     extra.add(GameSession.Note(note.time, it, GameSession.AVOID))
                 }
             }
+        }
+        if (notes.size >= 16 && notes.none { it.kind == GameSession.GOLD }) {
+            val i = (6 until notes.size).firstOrNull { n ->
+                notes[n].kind == "tap" && notes.getOrNull(n - 1)?.time != notes[n].time &&
+                    notes.getOrNull(n + 1)?.time != notes[n].time
+            }
+            if (i != null) notes[i] = GameSession.Note(notes[i].time, notes[i].lane, GameSession.GOLD)
         }
         return (notes + extra).sortedWith(compareBy({ it.time }, { it.lane }))
     }

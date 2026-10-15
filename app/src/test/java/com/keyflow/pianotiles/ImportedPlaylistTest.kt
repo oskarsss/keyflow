@@ -38,6 +38,22 @@ class ImportedPlaylistTest {
     }
 
     @Test
+    fun importsAllSongsBeyondTwoHundredAndCountsOnlyUniquePlayableEntries() {
+        val library = OnDeviceLibrary(context)
+        val entries = JSONArray((0 until 350).map {
+            JSONObject().put("id", "songid%05d".format(it)).put("title", "Song $it")
+        }).put(JSONObject.NULL).put(JSONObject().put("id", "invalid"))
+            .put(JSONObject().put("id", "songid00000"))
+        val source = JSONObject().put("title", "Large mix").put("entries", entries)
+        assertEquals(350, library.importSongCount(source))
+        assertTrue(library.savedPlaylists().isEmpty())
+        val playlist = library.createPlaylist(source, Random(8))
+        assertEquals(350, ids(playlist).size)
+        assertEquals((0 until 350).map { "songid%05d".format(it) }.toSet(), ids(playlist).toSet())
+        assertEquals(350, ids(OnDeviceLibrary(context).snapshot(playlist.getString("id"))!!).size)
+    }
+
+    @Test
     fun importsAreIndependentShuffledSnapshotsAndKeepTheirOrderAfterRestart() {
         val library = OnDeviceLibrary(context)
         val source = raw()

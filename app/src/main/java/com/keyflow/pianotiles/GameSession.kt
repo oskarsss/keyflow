@@ -46,6 +46,28 @@ class GameSession(
     var bonuses = 0
         private set
 
+    var chordBonuses = 0
+        private set
+    var lastChordBonus = 0
+        private set
+    var lastChordLanes = IntArray(0)
+        private set
+
+    private class Chord(val notes: List<Note>) {
+        var first = Double.POSITIVE_INFINITY
+        var last = Double.NEGATIVE_INFINITY
+        var awarded = false
+        val lanes = notes.map { it.lane }.toIntArray()
+    }
+
+    private val chords = HashMap<Note, Chord>().apply {
+        for (group in notes.filter { it.kind in listOf("tap", GOLD) && it.duration == 0.0 }.groupBy { it.time }.values) {
+            if (group.size < 2) continue
+            val chord = Chord(group)
+            for (note in group) put(note, chord)
+        }
+    }
+
     var perfect = 0
         private set
 
@@ -96,6 +118,8 @@ class GameSession(
         pointer: Int,
         position: Float = lane + .5f,
         penalize: Boolean = true,
+        /** The visible tile under the touch, even if it has not reached its timing window. */
+        target: Note? = null,
     ): Int {
         val regrip =
             active.entries.firstOrNull {
@@ -109,17 +133,34 @@ class GameSession(
             active[pointer] = gesture
             return 4
         }
+        val touched = target?.takeIf { it.judgement == 0 && it in notes }
         advance(time)
-        var candidate: Note? = null
-        var closest = WINDOW + .000001
-        for (i in expired until notes.size) {
-            val note = notes[i]
-            if (note.time > time + WINDOW) break
-            if (note.judgement != 0 || note.lane != lane) continue
-            val delta = abs(note.time - time)
-            if (delta <= closest && (candidate == null || candidate.kind == AVOID || note.kind != AVOID)) {
-                candidate = note
-                closest = delta
+        if (touched != null && touched.judgement == DODGED) {
+            // A bomb touched as it expires was hit, rather than successfully avoided.
+            dodged--
+            touched.judgement = 3
+            miss(touched.lane)
+            return 3
+        }
+        // Expiry may already have charged this touch's tile. Never charge it a second time.
+        if (touched != null && touched.judgement != 0) return 3
+        if (touched != null && abs(touched.time - time) > WINDOW) {
+            touched.judgement = 3
+            miss(touched.lane)
+            return 3
+        }
+        var candidate: Note? = touched
+        var closest = touched?.let { abs(it.time - time) } ?: (WINDOW + .000001)
+        if (touched == null) {
+            for (i in expired until notes.size) {
+                val note = notes[i]
+                if (note.time > time + WINDOW) break
+                if (note.judgement != 0 || note.lane != lane) continue
+                val delta = abs(note.time - time)
+                if (delta <= closest && (candidate == null || candidate.kind == AVOID || note.kind != AVOID)) {
+                    candidate = note
+                    closest = delta
+                }
             }
         }
         val note =
@@ -139,11 +180,11 @@ class GameSession(
             active[pointer] = Gesture(note, quality, position)
             return 4
         }
-        complete(note, quality)
+        complete(note, quality, time)
         return quality
     }
 
-    private fun complete(note: Note, quality: Int) {
+    private fun complete(note: Note, quality: Int, time: Double) {
         note.judgement = quality
         lastCompletedLane = note.endLane
         lastQuality = quality
@@ -157,6 +198,18 @@ class GameSession(
             bonuses++
             score += GOLD_BONUS
             if (lives in 1 until MAX_LIVES) lives++
+        }
+        chords[note]?.let { chord ->
+            chord.first = minOf(chord.first, time)
+            chord.last = maxOf(chord.last, time)
+            if (!chord.awarded && chord.last - chord.first <= CHORD_WINDOW &&
+                chord.notes.all { it.judgement in 1..2 }) {
+                chord.awarded = true
+                chordBonuses++
+                lastChordBonus = CHORD_BONUS * (chord.notes.size - 1) * multiplier
+                lastChordLanes = chord.lanes
+                score += lastChordBonus
+            }
         }
     }
 
@@ -176,7 +229,7 @@ class GameSession(
             time >= gesture.note.time + gesture.note.duration - .14 &&
                 abs(gesture.position - gesture.note.laneAt(time)) <= .7f
         )
-            complete(gesture.note, gesture.quality)
+            complete(gesture.note, gesture.quality, time)
         else {
             gesture.note.judgement = 3
             miss(gesture.note.laneAt(time).toInt().coerceIn(0, 3))
@@ -194,6 +247,7 @@ class GameSession(
                 miss(note.lane)
             }
         }
+        if (active.isEmpty()) return
         val iterator = active.iterator()
         while (iterator.hasNext()) {
             val gesture = iterator.next().value
@@ -214,7 +268,7 @@ class GameSession(
                 miss(note.laneAt(time).toInt().coerceIn(0, 3))
                 iterator.remove()
             } else if (time >= note.time + note.duration - .06 && !outside) {
-                complete(note, gesture.quality)
+                complete(note, gesture.quality, time)
                 iterator.remove()
             }
         }
@@ -261,6 +315,8 @@ class GameSession(
         const val MAX_LIVES = 8
         const val RECOVER_STREAK = 25
         const val GOLD_BONUS = 250
+        const val CHORD_BONUS = 100
+        const val CHORD_WINDOW = .065
         const val DODGED = 5
         const val GOLD = "gold"
         const val AVOID = "avoid"

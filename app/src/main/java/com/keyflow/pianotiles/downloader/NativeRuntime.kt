@@ -115,6 +115,7 @@ class NativeRuntime(private val context: Context) {
         request: YTDLRequest,
         id: String,
         timeoutSeconds: Long = 600,
+        outputFile: File? = null,
         progress: (String) -> Unit = {},
     ): Output {
         initialize(progress)
@@ -125,19 +126,29 @@ class NativeRuntime(private val context: Context) {
             .addOption("--js-runtimes", "quickjs:${quickJs.path}")
             .addOption("--remote-components", "ejs:github")
         val args = listOf(python.path, extractor.path) + request.buildCommand()
-        return executeImpl(args, id, timeoutSeconds, progress)
+        return executeImpl(args, id, timeoutSeconds, outputFile, progress)
     }
 
     private fun executeImpl(
         args: List<String>,
         id: String,
         timeout: Long,
+        outputFile: File?,
         progress: (String) -> Unit,
     ): Output {
         val process = start(args, id)
         val out = StringBuffer()
         val errors = StringBuffer()
-        val reader = drain(process.inputStream, out, 8 * 1024 * 1024, progress)
+        val outputFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val reader = if (outputFile == null) drain(process.inputStream, out, 8 * 1024 * 1024, progress)
+        else thread(name = "playlist-output") {
+            try {
+                process.inputStream.use { input -> outputFile.outputStream().use { input.copyTo(it) } }
+            } catch (error: Throwable) {
+                outputFailure.set(error)
+                destroyTree(process)
+            }
+        }
         val errorReader = drain(process.errorStream, errors, 512 * 1024, progress)
         try {
             check(process.waitFor(timeout, TimeUnit.SECONDS)) {
@@ -145,6 +156,7 @@ class NativeRuntime(private val context: Context) {
             }
             reader.join()
             errorReader.join()
+            outputFailure.get()?.let { throw it }
             check(process.exitValue() == 0) {
                 errors.toString().ifBlank { "The download failed. Please retry." }.takeLast(6000)
             }
@@ -163,6 +175,8 @@ class NativeRuntime(private val context: Context) {
                 ffmpeg.path,
                 "-v",
                 "error",
+                "-threads",
+                "1",
                 "-i",
                 audio.path,
                 "-t",
@@ -203,7 +217,11 @@ class NativeRuntime(private val context: Context) {
         check(!cancelled.remove(id)) { "Import cancelled." }
         check(!processes.containsKey(id)) { "A download is already running." }
         check(!updating) { "Wait for the downloader update to finish, then retry." }
-        ProcessBuilder(command)
+        // Java worker priority is not reliably inherited by subprocess creation. Give native
+        // decoding/extraction an explicit lower CPU priority so playback and rendering win.
+        val nice = File("/system/bin/nice")
+        val background = if (nice.canExecute()) listOf(nice.path, "-n", "10") + command else command
+        ProcessBuilder(background)
             .apply { environment().putAll(this@NativeRuntime.environment()) }
             .start()
             .also { processes[id] = it }

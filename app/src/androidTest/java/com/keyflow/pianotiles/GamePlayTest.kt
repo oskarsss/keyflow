@@ -167,7 +167,7 @@ class GamePlayTest {
                     }
                 }
                 assertEquals(
-                    "Note $index: expected touchscreen hit at ${note.time}s; misses=${view.session.misses}",
+                    "Note $index: expected touchscreen hit at ${note.time}s; now=${player.positionMs / 1000.0}, judgement=${note.judgement}, misses=${view.session.misses}",
                     view.session.notes.take(index + 1).count { it.kind != GameSession.AVOID },
                     view.session.hits,
                 )
@@ -264,7 +264,7 @@ class GamePlayTest {
                     }
                 }
                 assertEquals(
-                    "Gesture $index (${note.kind})",
+                    "Gesture $index (${note.kind}) at ${note.time}; now=${flowPlayer.positionMs / 1000.0}, judgement=${note.judgement}, misses=${flow.session.misses}",
                     flow.session.notes.take(index + 1).count { it.kind != GameSession.AVOID },
                     flow.session.hits,
                 )
@@ -280,6 +280,97 @@ class GamePlayTest {
             assertEquals(3, flow.session.stars())
             assertTrue(store.unlocked(2))
             screenshot("gesture-level-complete", 800)
+        }
+    }
+
+    @Test
+    fun nativeAnalysisStillWorksAtBackgroundPriority() {
+        val audio = File(context.cacheDir, "priority-audio-test.wav")
+        try {
+            context.assets.open("demo/first-light.wav").use { input -> audio.outputStream().use(input::copyTo) }
+            val runtime = OnDeviceLibrary.get(context).runtime
+            val samples = runtime.audioSamples(audio, "priority-audio-test", AudioChart::readPcm)
+            assertTrue(samples.duration > 30)
+            assertTrue(samples.flux.isNotEmpty())
+            val version = runtime.execute(
+                com.keyflow.pianotiles.downloader.YTDLRequest("https://www.youtube.com").addOption("--version"),
+                "priority-python-test", 30,
+            ).out.trim()
+            assertTrue("Downloader did not start: $version", version.firstOrNull()?.isDigit() == true)
+        } finally { audio.delete() }
+    }
+
+    @Test
+    fun bothArcadeModesAdvanceUsingCachedMusicWithoutInternet() {
+        fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command)
+            .use { descriptor -> android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use { it.readText().trim() } }
+        val wifi = shell("settings get global wifi_on") == "1"
+        val data = shell("settings get global mobile_data") == "1"
+        val root = File(context.filesDir, "playlists")
+        val backup = File(context.cacheDir, "arcade-index-backup-${System.nanoTime()}")
+        val store = LibraryStore(context)
+        val previousSelection = store.prefs.getString("playlistId", null)
+        val library = OnDeviceLibrary.get(context)
+        if (root.exists()) check(root.renameTo(backup))
+        root.mkdirs()
+        val song = org.json.JSONObject().put("id", "testArc0001").put("title", "Arcade offline test")
+            .put("artist", "Keyflow").put("duration", 8).put("status", "ready")
+        try {
+            shell("svc wifi disable")
+            shell("svc data disable")
+            // MediaPlayer sniffs the WAV container; the cached-song path is intentionally .mp3.
+            context.assets.open("demo/first-light.wav").use { input ->
+                store.songFile(song, "mp3").outputStream().use(input::copyTo)
+            }
+            val notes = org.json.JSONArray((0..3).map {
+                org.json.JSONObject().put("time", 1.5 + it * .5).put("lane", it)
+            })
+            store.chartFile(song).writeText(org.json.JSONObject().put("duration", 8).put("notes", notes).toString())
+            val playlist = org.json.JSONObject().put("id", "offline-arcade-test").put("title", "Offline arcade test")
+                .put("preloadCount", 0).put("songs", org.json.JSONArray().put(song))
+            library.save(playlist)
+            store.save(playlist)
+            for (mode in Arcade.Mode.values()) {
+                ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                    scenario.onActivity { activity = it }
+                    waitFor { onMain { views(activity.window.decorView).any { it.contentDescription == mode.title } } }
+                    onMain { views(activity.window.decorView).first { it.contentDescription == mode.title }.performClick() }
+                    clickText("Start")
+                    var prior: GameView? = null
+                    repeat(2) { stage ->
+                        var current: GameView? = null
+                        waitFor(12_000) {
+                            current = onMain { views(activity.window.decorView).filterIsInstance<GameView>().firstOrNull() }
+                            current != null && current !== prior
+                        }
+                        val view = current!!
+                        assertEquals(4, view.session.notes.map { it.time }.distinct().size)
+                        assertTrue(view.session.notes.all { it.time in 1.5..3.0 })
+                        for (note in view.session.notes) {
+                            if (note.kind == GameSession.AVOID) continue
+                            waitFor { onMain {
+                                if (view.clock.isPlaying && view.clock.positionMs / 1000.0 >= note.time - .04) {
+                                    dispatchLane(view, note.lane)
+                                    true
+                                } else false
+                            } }
+                        }
+                        assertEquals(0, view.session.misses)
+                        assertEquals(view.session.scored, view.session.hits)
+                        prior = view
+                        if (stage == 1) screenshot("offline-${mode.key}-arcade")
+                    }
+                    onMain { activity.onBackPressed() }
+                    clickText("End run")
+                }
+            }
+        } finally {
+            if (wifi) shell("svc wifi enable")
+            if (data) shell("svc data enable")
+            root.deleteRecursively()
+            if (backup.exists()) check(backup.renameTo(root)) else root.mkdirs()
+            for (extension in listOf("mp3", "chart${LibraryStore.CHART_VERSION}.json")) store.songFile(song, extension).delete()
+            store.prefs.edit().putString("playlistId", previousSelection).remove("arcade.reserve").apply()
         }
     }
 

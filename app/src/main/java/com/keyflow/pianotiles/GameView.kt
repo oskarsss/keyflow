@@ -134,6 +134,13 @@ class GameView(
     private var observedBonuses = 0
     private var observedMultiplier = 1
     private var displayedScore = 0f
+    private val scoreFormat = java.text.NumberFormat.getIntegerInstance(Locale.US)
+    private var hudScore = -1
+    private var hudScoreText = "0"
+    private var timerSeconds = -1
+    private var timerText = ""
+    private var observedChords = 0
+    private var chordAt = -1000L
     private var judgement = ""
     private var judgementColor = 0
     private var judgementAt = 0L
@@ -165,6 +172,8 @@ class GameView(
 
     /** Projects the flat playfield (lanes at full width, y linear in time) onto the highway. */
     private val field = Matrix()
+    private val touchField = Matrix()
+    private val touchPoint = FloatArray(2)
     private var stage: Bitmap? = null
     private val rect = RectF()
     private val lineBuffer = FloatArray(16 * 4)
@@ -457,6 +466,7 @@ class GameView(
         drawField(canvas, now, time, fever)
         drawNotes(canvas, time, now)
         drawStrike(canvas, now, h)
+        drawChordEffect(canvas, now)
 
         particles.draw(
             canvas,
@@ -529,6 +539,17 @@ class GameView(
                     if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.REJECT
                     else HapticFeedbackConstants.LONG_PRESS,
                 )
+        }
+        if (session.chordBonuses > observedChords) {
+            observedChords = session.chordBonuses
+            chordAt = now
+            val name = when (session.lastChordLanes.size) { 2 -> "DOUBLE!"; 3 -> "TRIPLE!"; else -> "QUAD!" }
+            banner("$name +${session.lastChordBonus}", Palette.GOLD, now)
+            for (l in session.lastChordLanes) {
+                laneGlowAt[l] = now
+                laneGlowColor[l] = Palette.GOLD
+                particles.emit((l + .5f) * lane, line, Palette.GOLD, density, 14)
+            }
         }
         val target = (options.baseScore + session.score).toFloat()
         displayedScore =
@@ -677,7 +698,7 @@ class GameView(
     }
 
     private fun visible(note: GameSession.Note, time: Double) =
-        note.judgement != 1 && note.judgement != 2 && note.judgement != GameSession.DODGED &&
+        (note.judgement == 0 || note.judgement == 4) &&
             note.time + note.duration - time >= -.6
 
     private class Look(val colors: IntArray, val side: Int)
@@ -788,8 +809,10 @@ class GameView(
             path.lineTo(x1 + half, y1)
             path.lineTo(x1 - half, y1)
             path.close()
-            val body =
-                faceShader(color xor 0x5A5A5A, intArrayOf(alpha(color, .04f), alpha(color, .3f), alpha(color, .55f)))
+            val body = unitShaders.getOrPut(color xor 0x5A5A5A) {
+                LinearGradient(0f, 0f, 0f, 1f,
+                    intArrayOf(alpha(color, .04f), alpha(color, .3f), alpha(color, .55f)), null, Shader.TileMode.CLAMP)
+            }
             matrix.setScale(1f, maxOf(1f, y0 - y1))
             matrix.postTranslate(0f, y1)
             body.setLocalMatrix(matrix)
@@ -936,6 +959,24 @@ class GameView(
         }
     }
 
+    private fun drawChordEffect(canvas: Canvas, now: Long) {
+        val age = (now - chordAt) / 650f
+        if (age !in 0f..1f) return
+        paint.shader = null
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(3f) * (1 - age)
+        paint.color = alpha(Palette.GOLD, 1 - age)
+        for (l in session.lastChordLanes) {
+            canvas.drawCircle((l + .5f) * w / 4, line, dp(14f + 54f * age), paint)
+        }
+        val lanes = session.lastChordLanes
+        if (lanes.size >= 2) {
+            canvas.drawLine((lanes.min() + .5f) * w / 4, line - dp(10f + age * 28),
+                (lanes.max() + .5f) * w / 4, line - dp(10f + age * 28), paint)
+        }
+        paint.style = Paint.Style.FILL
+    }
+
     private fun drawFeedback(canvas: Canvas, now: Long) {
         val age = now - judgementAt
         if (age < 450 && judgement.isNotEmpty()) {
@@ -974,7 +1015,12 @@ class GameView(
             paint.color = if (fever) Palette.GOLD else Palette.ACCENT
             canvas.drawRect(0f, 0f, w * ((time - from) / (to - from)).coerceIn(0.0, 1.0).toFloat(), dp(3f), paint)
         }
-        val score = String.format(Locale.US, "%,d", displayedScore.toInt())
+        val value = displayedScore.toInt()
+        if (value != hudScore) {
+            hudScore = value
+            hudScoreText = scoreFormat.format(value)
+        }
+        val score = hudScoreText
         text(canvas, score, 24f, Palette.TEXT, dp(18f), dp(42f), Paint.Align.LEFT, heavy)
         val m = session.multiplier
         if (m > 1) {
@@ -985,13 +1031,17 @@ class GameView(
             val pulse = if (m >= 4) .75f + .25f * sin(now / 110f) else 1f
             paint.color = alpha(color, .22f * pulse)
             canvas.drawRoundRect(x, dp(22f), x + dp(40f), dp(46f), dp(12f), dp(12f), paint)
-            text(canvas, "×$m", 14f, color, x + dp(20f), dp(39f), face = heavy)
+            text(canvas, MULTIPLIERS[m - 1], 14f, color, x + dp(20f), dp(39f), face = heavy)
         }
         if (options.timeLimitMs > 0) {
             val left = maxOf(0L, timeLeftMs)
             val seconds = ceil(left / 1000.0).toInt()
             val urgent = left < 10_000
-            val label = String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60)
+            if (seconds != timerSeconds) {
+                timerSeconds = seconds
+                timerText = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+            }
+            val label = timerText
             paint.color = if (urgent) alpha(Palette.RED, .25f + .15f * sin(now / 120f)) else 0xFF221F2D.toInt()
             canvas.drawRoundRect(w - dp(160f), dp(18f), w - dp(66f), dp(50f), dp(16f), dp(16f), paint)
             text(canvas, label, 18f, if (urgent) Palette.RED else Palette.TEXT, w - dp(113f), dp(41f), face = heavy)
@@ -1094,6 +1144,29 @@ class GameView(
         )
     }
 
+    /** Use the same projected tile heads that are drawn, rather than a full-width lane guess. */
+    private fun tileAt(x: Float, y: Float, time: Double): GameSession.Note? {
+        if (y < top - dp(2f) || y > line + dp(60f) || !field.invert(touchField)) return null
+        touchPoint[0] = x
+        touchPoint[1] = y
+        touchField.mapPoints(touchPoint)
+        val lane = w / 4
+        for (i in renderIndex until session.notes.size) {
+            val note = session.notes[i]
+            if (note.time - time > options.travel * 1.08) break
+            if (note.judgement != 0) continue
+            val p = ((note.time - time) / options.travel).toFloat()
+            if (p < -.45f || fog(p) <= 0f) continue
+            if (
+                touchPoint[0] >= (note.lane + .07f) * lane &&
+                    touchPoint[0] <= (note.lane + .93f) * lane &&
+                    touchPoint[1] >= worldY(p + TILE) &&
+                    touchPoint[1] <= worldY(p) + dp(11f)
+            ) return note
+        }
+        return null
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val index = event.actionIndex
         val x = event.getX(index)
@@ -1117,7 +1190,11 @@ class GameView(
             MotionEvent.ACTION_DOWN,
             MotionEvent.ACTION_POINTER_DOWN -> {
                 pointerLanes.put(event.getPointerId(index), lane)
-                result = session.press(lane, time, event.getPointerId(index), x / laneWidth)
+                val target = tileAt(x, y, time)
+                result = session.press(
+                    target?.lane ?: lane, time, event.getPointerId(index), x / laneWidth,
+                    target = target,
+                )
             }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
@@ -1160,6 +1237,7 @@ class GameView(
 
         /** Beat-line spacing in song seconds. */
         private const val BEAT = .5
+        private val MULTIPLIERS = arrayOf("×1", "×2", "×3", "×4")
 
         private val TAP = Look(intArrayOf(0xFF4A2FC0.toInt(), 0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()), 0xFF2B1B78.toInt())
         private val GOLD = Look(intArrayOf(0xFFB7791F.toInt(), 0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()), 0xFF7A4E0E.toInt())

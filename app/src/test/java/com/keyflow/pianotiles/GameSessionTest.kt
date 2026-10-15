@@ -49,6 +49,52 @@ class GameSessionTest {
     }
 
     @Test
+    fun touchingATileEarlyConsumesItWithOnlyOnePenalty() {
+        for (kind in listOf("tap", "hold", "slide", GameSession.GOLD, GameSession.AVOID)) {
+            val note = GameSession.Note(3.0, 0, kind, if (kind in listOf("hold", "slide")) 1.0 else 0.0)
+            val next = GameSession.Note(3.5, 0)
+            val game = GameSession(listOf(note, next))
+            assertEquals(3, game.press(0, 2.0, 7, target = note))
+            assertEquals(3, note.judgement)
+            assertEquals(0, game.hits)
+            assertNull(game.activeKind(7))
+            game.move(7, .5f, 3.0)
+            game.release(7, 3.0)
+            game.advance(3.2)
+            assertEquals(1, game.misses)
+            assertEquals(GameSession.MAX_LIVES - 1, game.lives)
+            assertEquals(0, game.bonuses)
+            assertEquals(0, game.dodged)
+            assertEquals(1, game.tap(0, 3.5))
+        }
+    }
+
+    @Test
+    fun touchingALaterTileDoesNotConsumeTheClosestTile() {
+        val first = GameSession.Note(2.1, 0)
+        val later = GameSession.Note(3.0, 0)
+        val game = GameSession(listOf(first, later))
+        assertEquals(3, game.press(0, 2.0, 7, target = later))
+        assertEquals(0, first.judgement)
+        assertEquals(1, game.tap(0, 2.1))
+        game.advance(3.3)
+        assertEquals(1, game.misses)
+    }
+
+    @Test
+    fun touchedTileExpiringDuringInputOnlyCostsOneLife() {
+        for (kind in listOf("tap", GameSession.GOLD, GameSession.AVOID)) {
+            val note = GameSession.Note(2.0, 0, kind)
+            val game = GameSession(listOf(note))
+            assertEquals(3, game.press(0, 2.2, 7, target = note))
+            game.advance(3.0)
+            assertEquals(1, game.misses)
+            assertEquals(0, game.dodged)
+            assertEquals(GameSession.MAX_LIVES - 1, game.lives)
+        }
+    }
+
+    @Test
     fun goodHitsAndPassBoundaryAreSeparate() {
         val game = song(8)
         for (i in 0 until 6) assertEquals(2, game.tap(i % 4, i + 1.12))

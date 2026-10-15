@@ -24,7 +24,6 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-MAX_SONGS = 200
 MAX_DURATION = 1200
 
 
@@ -149,9 +148,9 @@ class Library:
     def import_playlist(self, url, job, prefetch=None):
         try:
             result = subprocess.run(["yt-dlp", "--ignore-config", "--flat-playlist", "--dump-single-json",
-                                     "--yes-playlist", "--playlist-end", str(MAX_SONGS),
+                                     "--yes-playlist",
                                      "--socket-timeout", "20", "--", url],
-                                    capture_output=True, text=True, timeout=180)
+                                    capture_output=True, text=True, timeout=600)
             identifier = secrets.token_hex(12)
             (self.directory/("import-"+identifier+".log")).write_text(result.stderr[-100000:])
             if result.returncode != 0:
@@ -161,12 +160,14 @@ class Library:
                 existing = {s["id"]: dict(s) for p in self.playlists.values() for s in p["songs"]
                             if s.get("status") == "ready"}
             songs = []
+            seen = set()
             for entry in raw.get("entries", []):
                 if not entry or not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(entry.get("id", ""))):
                     continue
                 sid = entry["id"]
-                if any(s["id"] == sid for s in songs):
+                if sid in seen:
                     continue
+                seen.add(sid)
                 thumbs = entry.get("thumbnails") or []
                 song = {"id": sid, "title": entry.get("title") or "Untitled song",
                         "artist": entry.get("artist") or entry.get("uploader") or entry.get("channel") or "YouTube Music",

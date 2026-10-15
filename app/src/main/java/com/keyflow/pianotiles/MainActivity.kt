@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private var pendingUrl = ""
     private var operation = 0
     private var activeImport: String? = null
+    private var importReview: AlertDialog? = null
     private var foreground = true
     private var polling = false
     private val attemptedPrefetch = mutableSetOf<String>()
@@ -48,6 +49,11 @@ class MainActivity : Activity() {
     private var currentIndex = 0
     private var run: Arcade.Run? = null
     private val random = kotlin.random.Random(System.nanoTime())
+    private val arcadePreparation by lazy { ArcadePreparation(this) }
+    private val maintenance = Executors.newSingleThreadExecutor { task ->
+        Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "song-cleanup")
+    }
+    private var protectedSongId: String? = null
 
     /** A slice of a song played inside an arcade run. */
     private class Stage(val startMs: Int, val endMs: Int)
@@ -295,14 +301,6 @@ class MainActivity : Activity() {
             true
         }
         ui.gap(body, 12)
-        val option = ui.row().apply { setPadding(dp(4), 0, 0, 0) }
-        ui.weight(option, labels("Download all songs", "Play offline without waiting"))
-        ui.gap(option, 12)
-        option.addView(toggle(store.prefs.getBoolean("importDownloadAll", false), "Download all songs") {
-            store.prefs.edit().putBoolean("importDownloadAll", it).apply()
-        })
-        ui.fill(body, option)
-        ui.gap(body, 16)
         ui.fill(body, ui.button("Import playlist", Ui.Style.PRIMARY) { submit() })
         if (first) {
             ui.gap(body, 8)
@@ -316,6 +314,8 @@ class MainActivity : Activity() {
     }
 
     private fun cancelImport() {
+        importReview?.dismiss()
+        importReview = null
         activeImport?.let { library.runtime.cancel(it) }
         activeImport = null
     }
@@ -351,20 +351,24 @@ class MainActivity : Activity() {
         val url = pendingUrl
         io.execute {
             runCatching {
-                    library.importPlaylist(url, job) { message ->
+                    val raw = library.readPlaylist(url, job) { message ->
                         handler.post {
                             if (operation == run && !isDestroyed)
                                 status.text = message.removeSuffix("…").removeSuffix(" on this phone")
                         }
                     }
+                    raw to library.importSongCount(raw)
                 }
-                .onSuccess { playlist ->
+                .onSuccess { (raw, count) ->
                     handler.post {
                         if (operation == run && !isDestroyed) {
-                            activeImport = null
-                            pendingUrl = ""
-                            selectPlaylist(playlist)
-                            if (store.prefs.getBoolean("importDownloadAll", false)) downloadAll(playlist)
+                            reviewPlaylistImport(count, accept = {
+                                if (operation == run && !isDestroyed) saveImportedPlaylist(raw, run)
+                            }, cancel = {
+                                operation++
+                                cancelImport()
+                                showAddPlaylist()
+                            })
                         }
                     }
                 }
@@ -378,6 +382,39 @@ class MainActivity : Activity() {
                     }
                 }
         }
+    }
+
+    private fun saveImportedPlaylist(raw: JSONObject, run: Int) {
+        io.execute {
+            val result = runCatching { library.createPlaylist(raw) }
+            handler.post {
+                if (operation == run && !isDestroyed) {
+                    activeImport = null
+                    result.onSuccess { playlist ->
+                        pendingUrl = ""
+                        selectPlaylist(playlist)
+                    }.onFailure { error ->
+                        showAddPlaylist()
+                        showError(error)
+                    }
+                }
+            }
+        }
+    }
+
+    internal fun reviewPlaylistImport(count: Int, accept: () -> Unit, cancel: () -> Unit) {
+        if (count <= 100) {
+            accept()
+            return
+        }
+        importReview = AlertDialog.Builder(this)
+            .setTitle("Large playlist")
+            .setMessage("This playlist has $count songs. Keeping this much music on your phone can use a lot of storage as you play. Only the next few songs are prepared at first. Import the playlist?")
+            .setPositiveButton("Import $count songs") { _, _ -> accept() }
+            .setNegativeButton("Cancel") { _, _ -> cancel() }
+            .setOnCancelListener { cancel() }
+            .setOnDismissListener { importReview = null }
+            .show()
     }
 
     private fun selectPlaylist(playlist: JSONObject) {
@@ -396,7 +433,6 @@ class MainActivity : Activity() {
         val body = page(Screen.PLAYLISTS, bar("Playlists") { showHome() })
         val currentId = store.playlist?.optString("id")
         val playlists = library.savedPlaylists() + store.demo()
-        playlistSignature = signature(playlists)
         for ((i, playlist) in playlists.withIndex()) {
             val songs = playlist.getJSONArray("songs")
             val total = songs.length()
@@ -404,8 +440,6 @@ class MainActivity : Activity() {
             val title = playlist.optString("title")
             val imported = playlist.optString("id") != ORIGINALS
             val list = (0 until total).map { songs.getJSONObject(it) }
-            val offline = list.count { store.offline(it) }
-            val busy = list.filter { !store.offline(it) && it.optString("status") in BUSY }
             val current = playlist.optString("id") == currentId
             val item = ui.row().apply {
                 setPadding(dp(12), dp(12), dp(4), dp(12))
@@ -434,41 +468,11 @@ class MainActivity : Activity() {
             ui.gap(meter, 10)
             meter.addView(ui.text("$done/$total", 12f, Palette.MUTED))
             ui.fill(info, meter)
-            if (imported) {
-                ui.gap(info, 6)
-                ui.fill(
-                    info,
-                    ui.text(
-                        when {
-                            offline == total -> "All songs downloaded"
-                            busy.isNotEmpty() -> "Downloading · $offline of $total ready"
-                            else -> "$offline of $total downloaded"
-                        },
-                        12f,
-                        if (offline == total) Palette.MINT else Palette.MUTED,
-                    ),
-                )
-            }
             ui.weight(item, info)
             ui.gap(item, 4)
             if (imported) {
-                when {
-                    offline == total -> ui.gap(item, 0)
-                    busy.isNotEmpty() ->
-                        item.addView(
-                            ui.ring(offline / total.toFloat()).apply {
-                                setPadding(dp(13), dp(13), dp(13), dp(13))
-                                contentDescription = "Downloading $title"
-                            },
-                            LinearLayout.LayoutParams(dp(48), dp(48)),
-                        )
-                    else ->
-                        item.addView(ui.iconButton(Glyph.Kind.DOWNLOAD, "Download all songs in $title", Palette.ACCENT) {
-                            downloadAll(playlist)
-                        })
-                }
                 val more = ui.iconButton(Glyph.Kind.MORE, "More options for $title", Palette.MUTED) {}
-                more.setOnClickListener { playlistMenu(more, playlist, offline < total) }
+                more.setOnClickListener { playlistMenu(more, playlist) }
                 item.addView(more)
             } else item.addView(ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.FAINT, 20), LinearLayout.LayoutParams(dp(48), dp(48)))
             ui.fill(body, item)
@@ -489,32 +493,6 @@ class MainActivity : Activity() {
         add.addView(ui.text("Add playlist", 16f, Palette.ACCENT, ui.medium))
         ui.fill(body, add)
         if (y > 0) scroll?.post { scroll?.scrollTo(0, y) }
-        handler.removeCallbacks(refreshTask)
-        handler.postDelayed(refreshTask, 1500)
-    }
-
-    private var playlistSignature = ""
-    private val refreshTask = Runnable { refreshPlaylists() }
-
-    private fun signature(playlists: List<JSONObject>) =
-        playlists.joinToString("|") { playlist ->
-            val songs = playlist.getJSONArray("songs")
-            val list = (0 until songs.length()).map { songs.getJSONObject(it) }
-            "${playlist.optString("title")}:${list.count { store.offline(it) }}:" +
-                list.count { it.optString("status") in BUSY }
-        }
-
-    /** Keeps download counts on the playlists screen live while songs download. */
-    private fun refreshPlaylists() {
-        if (screen != Screen.PLAYLISTS || !foreground || isDestroyed) return
-        io.execute {
-            val latest = signature(library.savedPlaylists() + store.demo())
-            handler.post {
-                if (screen != Screen.PLAYLISTS || isDestroyed) return@post
-                if (latest != playlistSignature) showPlaylists()
-                else handler.postDelayed(refreshTask, 1500)
-            }
-        }
     }
 
     private fun downloadAll(playlist: JSONObject) {
@@ -532,15 +510,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun playlistMenu(anchor: View, playlist: JSONObject, canDownload: Boolean) {
+    private fun playlistMenu(anchor: View, playlist: JSONObject) {
         val menu = android.widget.PopupMenu(this, anchor)
         menu.menu.add(0, 1, 0, "Rename")
-        if (canDownload) menu.menu.add(0, 2, 1, "Download all songs")
+
         menu.menu.add(0, 3, 2, "Delete")
         menu.setOnMenuItemClickListener {
             when (it.itemId) {
                 1 -> renamePlaylist(playlist)
-                2 -> downloadAll(playlist)
                 else -> confirmDelete(playlist)
             }
             true
@@ -601,7 +578,7 @@ class MainActivity : Activity() {
         val title = playlist.optString("title")
         AlertDialog.Builder(this)
             .setTitle("Delete “$title”?")
-            .setMessage("Its levels and downloads are removed from this phone. Scores for its songs stay saved.")
+            .setMessage("This playlist is removed from Keyflow. Scores for its songs stay saved.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ -> deletePlaylist(playlist) }
             .show()
@@ -635,6 +612,8 @@ class MainActivity : Activity() {
 
     private fun showHome() {
         if (isDestroyed || store.playlist == null) return
+        arcadePreparation.pause()
+        scheduleCleanup()
         library.snapshot(store.playlist!!.getString("id"))?.let(store::save)
         val playlist = store.playlist!!
         val top = ui.row().apply { setPadding(dp(8), 0, dp(8), 0) }
@@ -771,12 +750,7 @@ class MainActivity : Activity() {
         ui.fill(body, frame)
     }
 
-    private fun heroLabel(song: JSONObject) =
-        when {
-            store.offline(song) -> "Play"
-            song.optString("status") in BUSY -> downloadStage(song)
-            else -> "Download & play"
-        }
+    private fun heroLabel(@Suppress("UNUSED_PARAMETER") song: JSONObject) = "Play"
 
     /** Overall download progress: the transfer is most of it, then conversion and charting. */
     private fun downloadFraction(song: JSONObject): Float? {
@@ -794,11 +768,11 @@ class MainActivity : Activity() {
         val progress = song.optString("progress")
         val percent = Regex("([0-9]+)(?:\\.[0-9]+)?%").find(progress)?.groupValues?.get(1)
         return when {
-            song.optString("status") != "caching" -> "Waiting for other downloads"
-            percent != null -> "Downloading $percent%"
-            progress.contains("MP3") -> "Converting audio"
+            song.optString("status") != "caching" -> "Getting music ready…"
+            percent != null -> "Preparing music · $percent%"
+            progress.contains("MP3") -> "Preparing audio…"
             progress.contains("beat") || progress.contains("chart") -> "Matching tiles to the beat"
-            else -> "Starting download"
+            else -> "Preparing song…"
         }
     }
 
@@ -998,32 +972,15 @@ class MainActivity : Activity() {
         val unlocked = store.unlocked(row.index)
         val secs = song.optDouble("duration").toInt()
         val length = if (secs > 0) String.format(Locale.US, "%d:%02d", secs / 60, secs % 60) else ""
-        val status = song.optString("status")
-        val offline = store.offline(song)
-        row.subtitle.text =
-            when {
-                unlocked && !offline && status in BUSY -> downloadStage(song)
-                unlocked && !offline && status == "error" -> "Download failed · tap to retry"
-                else -> listOf(song.optString("artist"), length).filter { it.isNotBlank() }.joinToString(" · ")
-            }
+        row.subtitle.text = listOf(song.optString("artist"), length).filter { it.isNotBlank() }.joinToString(" · ")
         row.trailing.removeAllViews()
-        val view: View? =
-            when {
-                !unlocked || store.completed(song) -> null
-                status in BUSY && !offline ->
-                    ui.ring(downloadFraction(song)).apply { setPadding(dp(5), dp(5), dp(5), dp(5)) }
-                status == "error" && !offline -> ui.icon(Glyph.Kind.ALERT, Palette.RED, 16)
-                !offline -> ui.icon(Glyph.Kind.DOWNLOAD, Palette.TEXT, 15)
-                else -> ui.icon(Glyph.Kind.PLAY, Palette.ON_ACCENT, 14)
+        if (unlocked && !store.completed(song)) {
+            row.trailing.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Palette.ACCENT)
+                setStroke(dp(2), Palette.BG)
             }
-        if (view != null) {
-            row.trailing.background =
-                GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(if (offline) Palette.ACCENT else Palette.SURFACE_HI)
-                    setStroke(dp(2), Palette.BG)
-                }
-            row.trailing.addView(view, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+            row.trailing.addView(ui.icon(Glyph.Kind.PLAY, Palette.ON_ACCENT, 14), FrameLayout.LayoutParams(-1, -1))
         } else row.trailing.background = null
     }
 
@@ -1071,6 +1028,7 @@ class MainActivity : Activity() {
 
     /** Keeps the next few unplayed levels downloaded, starting from the player's progress. */
     private fun prefetch() {
+        if (!ArcadePreparation.connected(this)) return
         val playlist = store.playlist ?: return
         val id = playlist.optString("id")
         if (id == ORIGINALS) return
@@ -1141,6 +1099,7 @@ class MainActivity : Activity() {
     }
 
     private fun showArcade(mode: Arcade.Mode) {
+        arcadePreparation.start()
         var minutes = store.prefs.getInt("arcade.minutes", 2).takeIf { it in Arcade.MINUTES } ?: 2
         val start = ui.button("Start", Ui.Style.PRIMARY, modeGlyph(mode)) { startArcade(mode, minutes) }
         val body = page(Screen.ARCADE, bar(null) { showHome() }, ui.column().apply { ui.fill(this, start) }, centered = true)
@@ -1194,17 +1153,7 @@ class MainActivity : Activity() {
         body.addView(card, LinearLayout.LayoutParams(-1, -2))
         refreshBest()
         ui.gap(body, 20)
-        val pool = arcadePool()
-        val imported = pool.count { !it.demo }
-        val ready = pool.count { !it.demo && store.offline(it.song) }
-        body.addView(
-            ui.text(
-                if (imported == 0) "Only the 3 built-in songs are available"
-                else "$ready of $imported playlist songs ready offline",
-                13f,
-                Palette.MUTED,
-            ),
-        )
+        body.addView(ui.text("Random music from your playlists", 13f, Palette.MUTED))
     }
 
     private fun startArcade(mode: Arcade.Mode, minutes: Int) {
@@ -1220,78 +1169,9 @@ class MainActivity : Activity() {
         } else preloadArcade(mode, minutes)
     }
 
-    /** Makes sure a handful of songs are offline before the clock starts. */
     private fun preloadArcade(mode: Arcade.Mode, minutes: Int) {
-        val pool = arcadePool()
-        val imported = pool.filter { !it.demo }
-        val ready = imported.filter { store.offline(it.song) }
-        val requested =
-            imported.filter { !store.offline(it.song) }.shuffled(random)
-                .take(maxOf(0, Arcade.READY_TARGET - ready.size) + if (ready.size >= Arcade.READY_TARGET) 2 else 1)
-        for (entry in requested) DownloadService.start(this, entry.playlistId, entry.id)
-        if (imported.isEmpty() || ready.size >= Arcade.READY_TARGET) {
-            beginRun(mode, minutes)
-            return
-        }
-        val target = minOf(Arcade.READY_TARGET, imported.size)
-        val op = ++operation
-        val body =
-            page(
-                Screen.LOADING,
-                bar(null, Glyph.Kind.CLOSE) {
-                    operation++
-                    showArcade(mode)
-                },
-                ui.column().apply {
-                    ui.fill(this, ui.button("Start now", Ui.Style.SECONDARY, modeGlyph(mode)) {
-                        operation++
-                        beginRun(mode, minutes)
-                    })
-                },
-                centered = true,
-            )
-        ui.gap(body, 40)
-        body.addView(
-            ui.icon(modeGlyph(mode), Palette.TEXT, 46).apply {
-                background = GradientDrawable(GradientDrawable.Orientation.TL_BR, modeColors(mode)).apply {
-                    shape = GradientDrawable.OVAL
-                }
-            },
-            LinearLayout.LayoutParams(dp(104), dp(104)),
-        )
-        ui.gap(body, 24)
-        body.addView(ui.title("Getting songs ready", 26f))
-        ui.gap(body, 8)
-        val status = ui.text("${ready.size} of $target songs ready", 14f, Palette.MUTED)
-        body.addView(status)
-        ui.gap(body, 20)
-        val meter = ui.meter(0f, modeColors(mode)[0], 10)
-        body.addView(meter, LinearLayout.LayoutParams(dp(260), -2))
-        fun poll() {
-            if (operation != op || isDestroyed) return
-            io.execute {
-                val snapshots = HashMap<String, JSONObject?>()
-                var count = ready.size
-                var failed = 0
-                for (entry in requested) {
-                    val playlist = snapshots.getOrPut(entry.playlistId) { library.snapshot(entry.playlistId) }
-                    val songs = playlist?.optJSONArray("songs")
-                    val song = songs?.let { (0 until it.length()).map(it::getJSONObject).firstOrNull { s -> s.optString("id") == entry.id } }
-                    if (store.offline(entry.song)) count++
-                    else if (song?.optString("status") == "error") failed++
-                }
-                handler.post {
-                    if (operation != op || isDestroyed) return@post
-                    status.text = "${minOf(count, target)} of $target songs ready"
-                    meter.fraction = minOf(count, target) / target.toFloat()
-                    if (count >= target || count + failed >= ready.size + requested.size) {
-                        operation++
-                        beginRun(mode, minutes)
-                    } else handler.postDelayed({ poll() }, 800)
-                }
-            }
-        }
-        poll()
+        arcadePreparation.start()
+        beginRun(mode, minutes)
     }
 
     private fun beginRun(mode: Arcade.Mode, minutes: Int) {
@@ -1301,19 +1181,26 @@ class MainActivity : Activity() {
 
     private fun nextStage() {
         val r = run ?: return
-        val ready = arcadePool().filter { it.demo || store.offline(it.song) }
-        val entry = Arcade.pick(ready, r.recent, random) ?: return finishRun()
-        r.remember(entry.id)
-        val song = entry.song
         val op = ++operation
+        // Catalog reads and readiness checks are disk work, including when advancing mid-run.
         io.execute {
-            runCatching { if (entry.demo) store.prepareDemo(song) }
-            val durationMs =
-                runCatching { (store.chart(song).optDouble("duration", song.optDouble("duration", 0.0)) * 1000).toInt() }
-                    .getOrDefault(0)
-            val (start, end) = Arcade.segment(durationMs, random)
+            val ready = arcadePool().filter { it.demo || store.offline(it.song) }
+            val entry = arcadePreparation.pick(ready, r.recent, kotlin.random.Random.Default)
+            if (entry == null) {
+                handler.post { if (operation == op && run === r && !isDestroyed) finishRun() }
+                return@execute
+            }
+            val song = entry.song
+            runCatching { if (entry.demo) store.prepareDemo(song) }.onFailure { error ->
+                handler.post { if (operation == op && !isDestroyed) { finishRun(); showError(error) } }
+                return@execute
+            }
+            val durationMs = (song.optDouble("duration", 0.0) * 1000).toInt()
+            val (start, end) = Arcade.segment(durationMs, kotlin.random.Random.Default)
             handler.post {
                 if (operation != op || isDestroyed || run !== r) return@post
+                r.remember(entry.id)
+                arcadePreparation.start(r.recent)
                 launchGame(song, -1, Stage(start, end))
             }
         }
@@ -1382,6 +1269,21 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- settings
 
+    private val cleanupScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun scheduleCleanup(force: Boolean = false) {
+        if (!store.prefs.getBoolean("smartStorage", true) || !cleanupScheduled.compareAndSet(false, true)) return
+        maintenance.execute {
+            try {
+                val now = System.currentTimeMillis()
+                if (force || now - store.prefs.getLong("lastCleanup", 0) > 21_600_000) {
+                    library.pruneUnused(store.prefs.getInt("retentionDays", 30))
+                    store.prefs.edit().putLong("lastCleanup", now).apply()
+                }
+            } finally { cleanupScheduled.set(false) }
+        }
+    }
+
     private fun showSettings() {
         val body = page(Screen.SETTINGS, bar("Settings") { showHome() })
         val prefs = store.prefs
@@ -1410,7 +1312,28 @@ class MainActivity : Activity() {
             toggle(prefs.getBoolean("haptics", true), "Vibration") { prefs.edit().putBoolean("haptics", it).apply() }
         }
 
-        val downloads = section(body, "Downloads")
+        val downloads = section(body, "Storage and downloads")
+        val stats = ui.text("Checking storage…", 13f, Palette.MUTED).apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
+        ui.fill(downloads, stats)
+        io.execute {
+            val songs = library.arcadeSongs()
+            val ready = songs.count { store.offline(it.song) }
+            handler.post { if (!isDestroyed) stats.text = "$ready of ${songs.size} songs downloaded" }
+        }
+        settingRow(downloads, "Smart storage management", "Remove songs you haven't played recently") {
+            toggle(prefs.getBoolean("smartStorage", true), "Smart storage management") {
+                prefs.edit().putBoolean("smartStorage", it).apply()
+                if (it) scheduleCleanup(force = true)
+            }
+        }
+        divider(downloads)
+        settingRow(downloads, "Remove unused songs after", "Playing a song resets its timer") {
+            ui.stepper(prefs.getInt("retentionDays", 30), 1..365, 1, { "$it days" }) {
+                prefs.edit().putInt("retentionDays", it).apply()
+                scheduleCleanup(force = true)
+            }
+        }
+        divider(downloads)
         if (!isOriginals) {
             val id = store.playlist!!.optString("id")
             settingRow(downloads, "Download ahead", "Upcoming levels kept offline") {
@@ -1419,6 +1342,10 @@ class MainActivity : Activity() {
                     attemptedPrefetch.clear()
                     io.execute { runCatching { library.setPreload(id, count) } }
                 }
+            }
+            divider(downloads)
+            actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download this playlist", "Keep every song available without internet", Palette.TEXT) {
+                store.playlist?.let(::downloadAll)
             }
             divider(downloads)
         }
@@ -1433,6 +1360,7 @@ class MainActivity : Activity() {
                         handler.post {
                             attemptedPrefetch.clear()
                             Toast.makeText(this, "Downloads cleared", Toast.LENGTH_SHORT).show()
+                            if (screen == Screen.SETTINGS) showSettings()
                         }
                     }
                 }
@@ -1542,6 +1470,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- loading and play
 
     private fun prepareSong(song: JSONObject, index: Int) {
+        arcadePreparation.pause()
         stopGame()
         currentSong = song
         currentIndex = index
@@ -1598,7 +1527,7 @@ class MainActivity : Activity() {
         val bar = ui.meter(.02f, height = 10)
         body.addView(bar, LinearLayout.LayoutParams(dp(260), -2))
         ui.gap(body, 12)
-        val status = ui.text("Starting download", 14f, Palette.TEXT, ui.medium)
+        val status = ui.text("Preparing song…", 14f, Palette.TEXT, ui.medium)
         body.addView(status)
         DownloadService.start(this, playlistId, song.optString("id"))
         waitForSong(playlistId, song, index, run, status, bar)
@@ -1639,7 +1568,7 @@ class MainActivity : Activity() {
                             updated.optString("status") == "error" -> {
                                 store.save(playlist!!)
                                 showHome()
-                                showError(IllegalStateException(updated.optString("error")))
+                                showError(IllegalStateException("Couldn't prepare this song. Try again when you have an internet connection."))
                             }
                             else -> {
                                 val target = downloadFraction(updated)
@@ -1664,86 +1593,82 @@ class MainActivity : Activity() {
         stopGame()
         currentSong = song
         currentIndex = index
-        runCatching {
+        val op = ++operation
+        val r = run
+        val seed = random.nextInt()
+        val id = song.optString("id")
+        library.protectPlayback(id)
+        protectedSongId = id
+        val previousLayout = store.prefs.getInt("layout.$id", -1)
+        io.execute {
+            runCatching {
                 val chart = store.chart(song)
-                val notes = chart.getJSONArray("notes")
-                val list = ArrayList<GameSession.Note>()
+                val raw = chart.getJSONArray("notes")
+                val list = ArrayList<GameSession.Note>(raw.length())
                 var previous = -1.0
-                for (i in 0 until notes.length()) {
-                    val note = notes.getJSONObject(i)
+                for (i in 0 until raw.length()) {
+                    val note = raw.getJSONObject(i)
                     val time = note.getDouble("time")
                     val lane = note.getInt("lane")
-                    check(time.isFinite() && time >= 0 && time >= previous && lane in 0..3) {
-                        "Invalid song chart. Clear downloaded songs in Settings and try again."
-                    }
                     val kind = note.optString("kind", "tap")
                     val duration = note.optDouble("duration", 0.0)
                     val endLane = note.optInt("endLane", lane)
-                    check(
-                        kind in listOf("tap", "hold", "slide") &&
-                            duration.isFinite() &&
-                            duration >= 0 &&
-                            endLane in 0..3 &&
-                            (kind == "tap" || duration > 0),
-                    ) {
-                        "Invalid gesture chart. Clear downloaded songs in Settings and try again."
-                    }
+                    check(time.isFinite() && time >= 0 && time >= previous && lane in 0..3 &&
+                        kind in listOf("tap", "hold", "slide") && duration.isFinite() && duration >= 0 &&
+                        endLane in 0..3 && (kind == "tap" || duration > 0)) { "This song's chart could not be read. Try preparing it again in Settings." }
                     list.add(GameSession.Note(time, lane, kind, duration, endLane))
                     previous = time
                 }
-                val r = run
                 val playable = if (stage != null) Arcade.clip(list, stage.startMs, stage.endMs) else list
                 check(playable.isNotEmpty()) { "This song has no playable notes." }
-                val notesWithVariety =
-                    TileVariety.decorate(playable, r?.variety ?: index, song.optString("id").hashCode() + (stage?.startMs ?: 0))
-                val session =
-                    if (r == null) GameSession(notesWithVariety)
-                    else GameSession(notesWithVariety, r.lives, r.mode != Arcade.Mode.TIME, r.combo)
-                val prepared = MediaPlayer()
-                player = prepared
-                prepared.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_GAME)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build(),
-                )
-                prepared.setDataSource(
-                    store.songFile(song, if (song.optBoolean("demo")) "wav" else "mp3").path,
-                )
-                val beats = chart.optJSONArray("beats")?.let { list -> DoubleArray(list.length()) { list.getDouble(it) } }
+                val decorated = TileVariety.decorate(playable, r?.variety ?: index, seed)
+                val layout = TileVariety.shuffleLanes(decorated, kotlin.random.Random(seed), previousLayout)
+                val session = if (r == null) GameSession(layout.notes)
+                    else GameSession(layout.notes, r.lives, r.mode != Arcade.Mode.TIME, r.combo)
+                val beats = chart.optJSONArray("beats")?.let { values -> DoubleArray(values.length()) { values.getDouble(it) } }
                     ?: song.optDouble("bpm", 0.0).takeIf { it > 0 }?.let { bpm ->
-                        // Built-in songs are composed on a grid from their first note.
                         val first = list.firstOrNull()?.time ?: 0.0
                         DoubleArray(((chart.optDouble("duration", 0.0) - first) * bpm / 60).toInt().coerceAtLeast(0)) {
                             first + it * 60 / bpm
                         }
-                    }
-                    ?: DoubleArray(0)
+                    } ?: DoubleArray(0)
                 val rhythm = Rhythm(beats, chart.optInt("barPhase", 0))
-                prepared.setOnPreparedListener {
-                    if (player !== prepared) return@setOnPreparedListener
-                    if (stage != null && stage.startMs > 0) prepared.seekTo(stage.startMs)
-                    showGame(song, session, MediaClock(prepared), stage, rhythm)
+                val path = store.songFile(song, if (song.optBoolean("demo")) "wav" else "mp3").path
+                handler.post {
+                    if (operation != op || isDestroyed || run !== r) return@post
+                    store.prefs.edit().putInt("layout.$id", layout.key).apply()
+                    val prepared = MediaPlayer()
+                    player = prepared
+                    runCatching {
+                        prepared.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                        prepared.setDataSource(path)
+                        prepared.setOnPreparedListener {
+                            if (player !== prepared) return@setOnPreparedListener
+                            if (stage != null && stage.startMs > 0) {
+                                prepared.setOnSeekCompleteListener {
+                                    if (player === prepared) {
+                                        prepared.setOnSeekCompleteListener(null)
+                                        showGame(song, session, MediaClock(prepared), stage, rhythm)
+                                    }
+                                }
+                                prepared.seekTo(stage.startMs)
+                            } else showGame(song, session, MediaClock(prepared), stage, rhythm)
+                        }
+                        prepared.setOnErrorListener { _, _, _ ->
+                            if (player === prepared) {
+                                stopGame(); run = null; showHome()
+                                showError(IllegalStateException("This song couldn't play. Try another song."))
+                            }
+                            true
+                        }
+                        prepared.prepareAsync()
+                    }.onFailure { error -> stopGame(); run = null; showHome(); showError(error) }
                 }
-                prepared.setOnErrorListener { _, _, _ ->
-                    stopGame()
-                    run = null
-                    showHome()
-                    showError(
-                        IllegalStateException(
-                            "This song couldn't play. Clear downloaded songs in Settings and try again.",
-                        ),
-                    )
-                    true
-                }
-                prepared.prepareAsync()
-            }
-            .onFailure {
-                stopGame()
-                run = null
-                showHome()
-                showError(it)
-            }
+            }.onFailure { error -> handler.post {
+                if (operation == op && !isDestroyed) { stopGame(); run = null; showHome(); showError(error) }
+            } }
+        }
     }
 
     private class Rhythm(val beats: DoubleArray, val barPhase: Int)
@@ -1806,6 +1731,7 @@ class MainActivity : Activity() {
                 },
             )
         game = view
+        store.markPlayed(song)
         root.addView(view, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
         if (!foreground) showPause()
@@ -2073,6 +1999,8 @@ class MainActivity : Activity() {
     }
 
     private fun stopGame() {
+        protectedSongId?.let(library::releasePlayback)
+        protectedSongId = null
         game?.stop()
         game = null
         player?.release()
@@ -2106,12 +2034,16 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         foreground = false
+        arcadePreparation.pause()
         if (game != null) showPause()
     }
 
     override fun onResume() {
         super.onResume()
         foreground = true
+        if (run != null || screen == Screen.ARCADE) arcadePreparation.start(run?.recent ?: emptyList())
+        else arcadePreparation.pause()
+        scheduleCleanup()
         if (game != null) showPause() else if (screen == Screen.HOME) startPolling()
     }
 
@@ -2121,6 +2053,8 @@ class MainActivity : Activity() {
         stopGame()
         handler.removeCallbacksAndMessages(null)
         io.shutdownNow()
+        maintenance.shutdownNow()
+        arcadePreparation.close()
         covers.shutdown()
         super.onDestroy()
     }

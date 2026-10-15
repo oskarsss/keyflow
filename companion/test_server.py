@@ -55,6 +55,22 @@ class PlaylistTests(unittest.TestCase):
             self.assertEqual(restored.playlists[original["id"]]["songs"], original["songs"])
             restored.executor.shutdown()
 
+    def test_import_has_no_two_hundred_song_cap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = Library(Path(temp), "test", 0)
+            try:
+                entries = [{"id": f"songid{i:05d}"} for i in range(350)]
+                result = type("Result", (), {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                    {"title": "Large mix", "entries": entries + [entries[0], None]})})()
+                job = {}
+                with patch("server.subprocess.run", return_value=result) as run:
+                    library.import_playlist("https://music.youtube.com/playlist?list=PLA2wtd_DK6uw", job)
+                self.assertNotIn("--playlist-end", run.call_args.args[0])
+                self.assertEqual(job["status"], "complete")
+                self.assertEqual({s["id"] for s in job["playlist"]["songs"]}, {e["id"] for e in entries})
+            finally:
+                library.executor.shutdown()
+
     def test_independent_import_reuses_complete_shared_cache_after_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)

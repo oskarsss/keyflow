@@ -79,6 +79,12 @@ class LibraryStore(private val context: Context) {
     fun offline(song: JSONObject) =
         song.optBoolean("demo") || (songFile(song, "mp3").isFile && chartFile(song).isFile)
 
+    fun markPlayed(song: JSONObject, now: Long = System.currentTimeMillis()) {
+        prefs.edit().putLong(key(song) + ".lastPlayed", now).apply()
+    }
+
+    fun lastPlayed(song: JSONObject) = prefs.getLong(key(song) + ".lastPlayed", 0L)
+
     fun preloadCount(collection: JSONObject): Int = prefs.getInt(
         "preload.${collection.optString("id")}", collection.optInt("preloadCount", 3),
     ).coerceIn(0, 20)

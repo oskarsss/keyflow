@@ -16,7 +16,27 @@ object Arcade {
     const val SEGMENT_MS = 45_000
 
     /** Songs that should be playable offline before a run starts. */
-    const val READY_TARGET = 4
+    const val READY_TARGET = 2
+
+    /** Retain the next picks, then draw from the whole catalog, including music not yet saved. */
+    fun plan(pool: List<Entry>, previous: List<String>, excluded: Set<String>, retryLater: Set<String>, random: Random): List<Entry> {
+        val eligible = pool.filter { !it.demo && it.id !in excluded && it.id !in retryLater }.distinctBy { it.id }
+        val byId = eligible.associateBy { it.id }
+        val kept = previous.distinct().mapNotNull { byId[it] }.take(READY_TARGET)
+        return kept + eligible.filter { entry -> kept.none { it.id == entry.id } }.shuffled(random)
+            .take(READY_TARGET - kept.size)
+    }
+
+    /** Fill the upcoming buffer, counting pending work, without choosing the current/recent songs. */
+    fun prefetch(
+        pool: List<Entry>, ready: Set<String>, pending: Set<String>, excluded: Set<String>,
+        retryLater: Set<String>, random: Random,
+    ): List<Entry> {
+        val eligible = pool.filter { !it.demo && it.id !in excluded }.distinctBy { it.id }
+        val available = eligible.count { it.id in ready || it.id in pending }
+        return eligible.filter { it.id !in ready && it.id !in pending && it.id !in retryLater }
+            .shuffled(random).take(maxOf(0, READY_TARGET - available))
+    }
 
     class Entry(val playlistId: String, val song: JSONObject) {
         val id: String
