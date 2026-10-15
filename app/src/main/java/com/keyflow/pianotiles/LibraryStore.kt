@@ -69,4 +69,48 @@ class LibraryStore(private val context: Context) {
 
     fun offline(song: JSONObject) =
         song.optBoolean("demo") || (songFile(song, "mp3").isFile && songFile(song, "json").isFile)
+
+    // ---- Player progression, shared across playlists.
+
+    val xp
+        get() = prefs.getInt("xp", 0)
+
+    /** Experience for a run: score, stars and a clear bonus. */
+    fun award(session: GameSession): Int {
+        val gained = session.score / 60 + session.stars() * 40 + if (session.passed()) 60 else 10
+        prefs.edit().putInt("xp", xp + gained).apply()
+        return gained
+    }
+
+    /** Consecutive days with at least one finished song; 0 once a day is skipped. */
+    fun streak(): Int {
+        val today = java.time.LocalDate.now().toEpochDay()
+        val last = prefs.getLong("streak.day", Long.MIN_VALUE / 2)
+        return if (last >= today - 1) prefs.getInt("streak.count", 0) else 0
+    }
+
+    fun markPlayedToday() {
+        val today = java.time.LocalDate.now().toEpochDay()
+        val last = prefs.getLong("streak.day", Long.MIN_VALUE / 2)
+        val count =
+            when (last) {
+                today -> prefs.getInt("streak.count", 1)
+                today - 1 -> prefs.getInt("streak.count", 0) + 1
+                else -> 1
+            }
+        prefs.edit().putLong("streak.day", today).putInt("streak.count", count).apply()
+    }
+
+    companion object {
+        /** Level n starts at 150·(n−1)² XP. */
+        fun level(xp: Int) = 1 + kotlin.math.sqrt(xp / 150.0).toInt()
+
+        fun levelStart(level: Int) = 150 * (level - 1) * (level - 1)
+
+        fun levelFraction(xp: Int): Float {
+            val level = level(xp)
+            val from = levelStart(level)
+            return (xp - from).toFloat() / (levelStart(level + 1) - from)
+        }
+    }
 }

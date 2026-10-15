@@ -13,7 +13,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.shadows.ShadowAlertDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
@@ -26,15 +25,12 @@ class PlaylistLibraryTest {
     }
 
     private fun choose(activity: MainActivity, id: String) {
-        views(activity.window.decorView).filterIsInstance<TextView>()
-            .first { it.text.toString() == "Playlists" }.performClick()
-        val picker = ShadowAlertDialog.getLatestAlertDialog()
-        val list = picker.listView
+        views(activity.window.decorView).first { it.contentDescription == "Switch playlist" }
+            .performClick()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
         val title = OnDeviceLibrary.get(context).snapshot(id)!!.getString("title")
-        val index = (0 until list.adapter.count).first {
-            list.adapter.getItem(it).toString().startsWith("$title\n")
-        }
-        list.performItemClick(list.getChildAt(index), index, list.adapter.getItemId(index))
+        views(activity.window.decorView).first { it.contentDescription == "Open playlist $title" }
+            .performClick()
         shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 
@@ -76,7 +72,7 @@ class PlaylistLibraryTest {
             assertFalse(restored.unlocked(2))
             val nodes = views(controller.get().window.decorView).toList()
             val titles = nodes.filterIsInstance<TextView>().map { it.text.toString() }
-            assertTrue(titles.contains("1 of 3 songs completed"))
+            assertTrue(titles.contains("1 of 3 cleared"))
             assertTrue(titles.contains("Violet Hour"))
             assertFalse(titles.contains("Afterglow"))
             assertTrue(titles.contains("Af*******"))

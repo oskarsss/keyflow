@@ -4,21 +4,87 @@ import android.content.Context
 import android.graphics.*
 import android.media.MediaPlayer
 import android.media.PlaybackParams
+import android.os.Build
 import android.os.SystemClock
+import android.util.SparseIntArray
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.sin
 
+/** Audio position, so rendering and judgement share one clock. */
+interface GameClock {
+    val positionMs: Int
+    val durationMs: Int
+    val isPlaying: Boolean
+
+    fun start(speed: Float)
+
+    fun volume(level: Float) {}
+
+    fun pause()
+}
+
+class MediaClock(val player: MediaPlayer) : GameClock {
+    override val positionMs
+        get() = player.currentPosition
+
+    override val durationMs
+        get() = player.duration
+
+    override val isPlaying
+        get() = player.isPlaying
+
+    override fun start(speed: Float) {
+        player.playbackParams = PlaybackParams().setSpeed(speed).setPitch(1f)
+        player.start()
+    }
+
+    override fun pause() {
+        if (player.isPlaying) player.pause()
+    }
+
+    override fun volume(level: Float) = player.setVolume(level, level)
+}
+
+/**
+ * The playfield is a perspective highway: tiles appear at a glowing horizon and grow as they
+ * approach the strike line. Touch lanes are measured at the strike line, where the field is full
+ * width, so the perspective never changes what a tap means.
+ */
 class GameView(
     context: Context,
-    private val title: String,
     val session: GameSession,
-    private val player: MediaPlayer,
-    private val speed: Float,
-    timingOffsetMs: Int,
+    val clock: GameClock,
+    private val options: Options,
     private val listener: Listener,
 ) : View(context) {
+    /**
+     * [travel] is how many song-seconds a tile takes to fall; [hint] shows first-run instructions
+     * and [introduce] lists tile kinds the player has not met yet.
+     */
+    class Options(
+        val speed: Float = 1f,
+        val offsetMs: Int = 0,
+        val travel: Double = 1.7,
+        val haptics: Boolean = true,
+        val hint: Boolean = false,
+        val introduce: List<String> = emptyList(),
+        /** Arcade segments: play from [startMs] until [endMs] (0 = the song's end). */
+        val startMs: Int = 0,
+        val endMs: Int = 0,
+        /** Time Attack clock; 0 disables it. */
+        val timeLimitMs: Long = 0,
+        /** Score already earned earlier in an arcade run. */
+        val baseScore: Int = 0,
+        /** Shown under the countdown, such as "Song 3 · Speed ×1.10". */
+        val caption: String = "",
+        val segmentDone: String = "Song complete!",
+    )
+
     interface Listener {
         fun finished(session: GameSession)
 
@@ -26,51 +92,97 @@ class GameView(
     }
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val face = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val medium = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val heavy = Typeface.create("sans-serif-black", Typeface.NORMAL)
     private val density = resources.displayMetrics.density
-    private val offset = timingOffsetMs / 1000.0
+    private val offset = options.offsetMs / 1000.0
     private val particles = HitParticles()
-    private var startTime = SystemClock.uptimeMillis()
+    private val pauseGlyph = Glyph(Glyph.Kind.PAUSE, Palette.TEXT)
+    private val heart = Glyph(Glyph.Kind.HEART, Palette.RED)
+    private val heartEmpty = Glyph(Glyph.Kind.HEART, 0xFF2C2939.toInt())
+    private val starGlyph = Glyph(Glyph.Kind.STAR, 0xFF7A4E0E.toInt())
+    private val bombGlyph = Glyph(Glyph.Kind.CLOSE, Palette.RED)
+
+    private var countdownFrom = SystemClock.uptimeMillis()
+    private var countdownLength = INTRO_MS
     private var lastFrame = 0L
     private var running = true
     private var started = false
+    private var rolling = false
     private var ended = false
-    private var feedback = ""
-    private var feedbackUntil = 0L
-    private var flashLane = -1
-    private var flashUntil = 0L
+    private var endingAt = 0L
     private var renderIndex = 0
-    private val railPath = Path()
-    private val trailX = FloatArray(32)
-    private val trailY = FloatArray(32)
-    private val trailTime = LongArray(32)
-    private var trailCursor = 0
+    private val path = Path()
+
     private var observedHits = 0
     private var observedMisses = 0
-    private var backdrop: LinearGradient? = null
-    private val tileShaders = arrayOfNulls<LinearGradient>(3)
-    private val shaderMatrix = Matrix()
+    private var observedBonuses = 0
+    private var observedMultiplier = 1
+    private var displayedScore = 0f
+    private var judgement = ""
+    private var judgementColor = 0
+    private var judgementAt = 0L
+    private var bannerText = ""
+    private var bannerColor = 0
+    private var bannerAt = 0L
+    private var comboAt = 0L
+    private var shakeAt = 0L
+    private val laneGlowAt = LongArray(4)
+    private val laneGlowColor = IntArray(4)
+    private val pointerLanes = SparseIntArray()
+
+    // Geometry, refreshed on size change.
+    private var top = 0f
+    private var line = 0f
+    private var horizon = 0f
+    private var cx = 0f
+    private var w = 0f
+
+    private var backdrop: Shader? = null
+    private var sky: Shader? = null
+    private var floor: Shader? = null
+    private var feverFloor: Shader? = null
+    private var strikeGlow: Shader? = null
+    private var danger: Shader? = null
+    private val unitShaders = HashMap<Int, LinearGradient>()
+    private var gloss: LinearGradient? = null
+    private val matrix = Matrix()
+
+    /** Projects the flat playfield (lanes at full width, y linear in time) onto the highway. */
+    private val field = Matrix()
+    private var stage: Bitmap? = null
+    private val rect = RectF()
+    private val lineBuffer = FloatArray(16 * 4)
 
     init {
-        contentDescription =
-            "Four piano lanes. Tap tiles as they cross the glowing line. Eight misses ends the level."
+        contentDescription = "Four piano lanes. Tap tiles as they reach the line."
         isFocusable = true
     }
 
     private fun dp(n: Float) = n * density
 
+    private val hud
+        get() = dp(64f)
+
+    private val keys
+        get() = dp(92f)
+
     fun pause() {
-        if (running && !ended) {
-            running = false
-            session.suspendGestures()
-            if (started) player.pause()
-        }
+        if (!running || ended) return
+        running = false
+        session.suspendGestures()
+        pointerLanes.clear()
+        if (rolling) clock.pause()
+        rolling = false
+        invalidate()
     }
 
+    /** Resumes after a short countdown so fingers can find the lanes again. */
     fun resume() {
-        if (ended) return
+        if (ended || running) return
         running = true
-        if (started) player.start() else startTime = SystemClock.uptimeMillis()
+        countdownFrom = SystemClock.uptimeMillis()
+        countdownLength = if (started) RESUME_MS else INTRO_MS
         lastFrame = 0
         invalidate()
     }
@@ -80,38 +192,160 @@ class GameView(
         running = false
     }
 
-    private fun finish() {
-        if (ended) return
-        ended = true
-        running = false
-        if (player.isPlaying) player.pause()
-        listener.finished(session)
-    }
+    /** Time Attack: milliseconds left on the run clock. */
+    var timeLeftMs = options.timeLimitMs
+        private set
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+    val timedOut
+        get() = options.timeLimitMs > 0 && timeLeftMs <= 0
+
+    private var lastTick = 0L
+
+    // ------------------------------------------------------------------ perspective
+
+    /** Depth for field progress p: 0 at the strike line, 1 at the horizon edge of the field. */
+    private fun depth(p: Float) = maxOf(.35f, 1 + p * (FAR - 1))
+
+    private fun yAt(p: Float) = horizon + (line - horizon) / depth(p)
+
+    /** Screen x of a lane position (0..4) at progress p. */
+    private fun xAt(lane: Float, p: Float) = cx + (lane * w / 4 - cx) / depth(p)
+
+    private fun progress(time: Double) = ((time - songTime) / options.travel).toFloat()
+
+    private var songTime = 0.0
+
+    override fun onSizeChanged(width: Int, height: Int, oldw: Int, oldh: Int) {
+        w = width.toFloat()
+        cx = w / 2
+        top = hud + dp(6f)
+        line = height - keys
+        horizon = (FAR * top - line) / (FAR - 1)
         backdrop =
             LinearGradient(
                 0f,
                 0f,
-                w.toFloat(),
-                h.toFloat(),
-                intArrayOf(0xFF231B35.toInt(), 0xFF111823.toInt(), 0xFF151122.toInt()),
+                0f,
+                height.toFloat(),
+                intArrayOf(0xFF140F26.toInt(), 0xFF0B0A12.toInt(), 0xFF07060B.toInt()),
                 null,
                 Shader.TileMode.CLAMP,
             )
-        val height = minOf(dp(122f), (h - dp(263f)) * .25f)
-        val colors = intArrayOf(0xFFAA8BEF.toInt(), 0xFF72DCCF.toInt(), 0xFF7C365A.toInt())
-        for (i in colors.indices) tileShaders[i] =
+        sky =
+            RadialGradient(
+                cx,
+                top,
+                w * .8f,
+                intArrayOf(0x806D4AE8.toInt(), 0x226D4AE8, 0x00000000),
+                floatArrayOf(0f, .45f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        floor =
+            LinearGradient(
+                0f,
+                top,
+                0f,
+                line,
+                intArrayOf(0xFF0C0A16.toInt(), 0xFF161229.toInt(), 0xFF1F1838.toInt()),
+                null,
+                Shader.TileMode.CLAMP,
+            )
+        feverFloor =
+            LinearGradient(
+                0f,
+                top,
+                0f,
+                line,
+                intArrayOf(0x00000000, 0x33FCD34D, 0x55F59E0B),
+                null,
+                Shader.TileMode.CLAMP,
+            )
+        strikeGlow =
+            LinearGradient(
+                0f,
+                line - dp(46f),
+                0f,
+                line,
+                intArrayOf(0x00A78BFA, 0x55A78BFA),
+                null,
+                Shader.TileMode.CLAMP,
+            )
+        danger =
+            RadialGradient(
+                cx,
+                (top + line) / 2,
+                maxOf(w, line - top) * .75f,
+                intArrayOf(0x00000000, 0x77FB7185),
+                floatArrayOf(.55f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        gloss =
             LinearGradient(
                 0f,
                 0f,
                 0f,
-                height,
-                intArrayOf(0xFF242035.toInt(), colors[i]),
+                1f,
+                intArrayOf(0x55FFFFFF, 0x00FFFFFF),
                 null,
                 Shader.TileMode.CLAMP,
             )
+        unitShaders.clear()
+        field.setPolyToPoly(
+            floatArrayOf(0f, line, w, line, w, top, 0f, top),
+            0,
+            floatArrayOf(0f, line, w, line, xAt(4f, 1f), top, xAt(0f, 1f), top),
+            0,
+            4,
+        )
+        stage = renderStage(width, height)
     }
+
+    /** Static scenery (sky, floor, lane dividers and rails) is drawn once per size. */
+    private fun renderStage(width: Int, height: Int): Bitmap? {
+        if (width <= 0 || height <= 0) return null
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bitmap)
+        paint.shader = backdrop
+        paint.color = Color.WHITE
+        c.drawRect(0f, 0f, w, height.toFloat(), paint)
+        paint.shader = sky
+        paint.alpha = 170
+        c.drawRect(0f, 0f, w, line, paint)
+        paint.alpha = 255
+        path.reset()
+        path.moveTo(xAt(0f, 1f), top)
+        path.lineTo(xAt(4f, 1f), top)
+        path.lineTo(w, line)
+        path.lineTo(0f, line)
+        path.close()
+        paint.shader = floor
+        c.drawPath(path, paint)
+        paint.shader = null
+        paint.style = Paint.Style.STROKE
+        for (k in 0..4) {
+            val edge = k == 0 || k == 4
+            paint.strokeWidth = if (edge) dp(2.5f) else dp(1f)
+            paint.color = if (edge) 0x99A78BFA.toInt() else 0x22FFFFFF
+            c.drawLine(xAt(k.toFloat(), 1f), top, xAt(k.toFloat(), 0f), line, paint)
+        }
+        paint.style = Paint.Style.FILL
+        return bitmap
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        stage?.recycle()
+        stage = null
+    }
+
+    /** World y for field progress p (0 at the strike line, 1 at the far edge). */
+    private fun worldY(p: Float) = line - p * (line - top)
+
+    /** A vertical gradient over 0..1, positioned per tile with a matrix instead of reallocating. */
+    private fun faceShader(key: Int, colors: IntArray) =
+        unitShaders.getOrPut(key) {
+            LinearGradient(0f, 0f, 0f, 1f, colors, null, Shader.TileMode.CLAMP)
+        }
 
     private fun text(
         canvas: Canvas,
@@ -120,9 +354,11 @@ class GameView(
         color: Int,
         x: Float,
         y: Float,
-        align: Paint.Align,
+        align: Paint.Align = Paint.Align.CENTER,
+        face: Typeface = medium,
     ) {
         paint.shader = null
+        paint.style = Paint.Style.FILL
         paint.color = color
         paint.textSize = dp(size)
         paint.typeface = face
@@ -130,150 +366,77 @@ class GameView(
         canvas.drawText(value, x, y, paint)
     }
 
+    private fun alpha(color: Int, fraction: Float) =
+        (color and 0xFFFFFF) or ((fraction.coerceIn(0f, 1f) * (color ushr 24)).toInt() shl 24)
+
+    // ------------------------------------------------------------------ frame
+
     override fun onDraw(canvas: Canvas) {
-        val w = width.toFloat()
         val h = height.toFloat()
-        val top = dp(145f)
-        val line = h - dp(118f)
-        val lane = w / 4
         val now = SystemClock.uptimeMillis()
-        val countdown = (now - startTime) / 1000.0
-        if (running && !started && countdown >= 3) {
+        val countdown = (now - countdownFrom).toFloat() / countdownLength
+        if (running && endingAt == 0L && countdown >= 1f && !rolling) {
             started = true
-            player.playbackParams = PlaybackParams().setSpeed(speed).setPitch(1f)
-            player.start()
+            rolling = true
+            clock.start(options.speed)
         }
         val time =
-            if (started) player.currentPosition / 1000.0 + offset else -maxOf(0.0, 3 - countdown)
-        if (running && started) {
+            if (started) clock.positionMs / 1000.0 + offset
+            else options.startMs / 1000.0 - (1 - countdown.coerceIn(0f, 1f)) * INTRO_MS / 1000.0
+        songTime = time
+        if (rolling && options.timeLimitMs > 0) {
+            if (lastTick > 0) timeLeftMs -= now - lastTick
+            lastTick = now
+        } else lastTick = 0
+        if (rolling && options.endMs > 0) {
+            // Fade arcade segments in and out instead of cutting the music.
+            val position = clock.positionMs
+            clock.volume(
+                minOf(1f, (position - options.startMs) / 700f, (options.endMs - position) / 1500f)
+                    .coerceIn(0f, 1f),
+            )
+        }
+        if (running && started && endingAt == 0L) {
             session.advance(time)
             if (
                 session.failed() ||
-                    (!player.isPlaying && player.currentPosition >= player.duration - 100)
+                    timedOut ||
+                    (options.endMs > 0 && clock.positionMs >= options.endMs) ||
+                    (!clock.isPlaying && clock.positionMs >= clock.durationMs - 100)
             ) {
-                finish()
-                return
+                endingAt = now
+                rolling = false
+                clock.pause()
+                pointerLanes.clear()
             }
         }
-        paint.color = Color.WHITE
-        paint.shader = backdrop
-        canvas.drawRect(0f, 0f, w, h, paint)
-        paint.shader = null
-        for (i in 0..3) {
-            paint.color = if (i % 2 == 0) 0x161B3042 else 0x162F2443
-            canvas.drawRect(i * lane, top, (i + 1) * lane, h, paint)
-            paint.color = 0x224D4963
-            canvas.drawRect(i * lane, top, i * lane + dp(1f), h, paint)
-        }
-        val tileHeight = minOf(dp(122f), (line - top) * .25f)
-        while (
-            renderIndex < session.notes.size &&
-                session.notes[renderIndex].time + session.notes[renderIndex].duration < time - .6
-        ) renderIndex++
-        for (i in renderIndex until session.notes.size) {
-            val note = session.notes[i]
-            if (note.judgement == 1 || note.judgement == 2) continue
-            val delta = note.time - time
-            if (delta > TRAVEL + .6) break
-            if (delta + note.duration < -.6) continue
-            val bottom = TileScheduler.bottom(note.time, time, top, line, TRAVEL)
-            if (note.kind != "tap") {
-                val endBottom =
-                    TileScheduler.bottom(note.time + note.duration, time, top, line, TRAVEL)
-                val active = note.judgement == 4
-                val startX = (if (active) note.laneAt(time) else note.lane + .5f) * lane
-                val startY = if (active) line else bottom
-                val endX = (note.endLane + .5f) * lane
-                paint.shader = null
-                paint.style = Paint.Style.STROKE
-                paint.strokeCap = Paint.Cap.ROUND
-                railPath.reset()
-                railPath.moveTo(startX, startY)
-                railPath.lineTo(endX, endBottom)
-                paint.color = if (note.judgement == 3) 0x66683C52 else 0x5549BBAE
-                paint.strokeWidth = dp(38f)
-                canvas.drawPath(railPath, paint)
-                paint.color = if (active) 0xFF85E8D1.toInt() else 0xFFB7A0FF.toInt()
-                paint.strokeWidth = dp(7f)
-                canvas.drawPath(railPath, paint)
-                paint.style = Paint.Style.FILL
-                canvas.drawCircle(startX, startY, dp(15f), paint)
-                canvas.drawCircle(endX, endBottom, dp(9f), paint)
-                if (active) {
-                    paint.color = 0x4485E8D1
-                    canvas.drawCircle(startX, line, dp(29f), paint)
-                    paint.color = Color.WHITE
-                    canvas.drawCircle(startX, line, dp(7f), paint)
-                } else
-                    text(
-                        canvas,
-                        if (note.kind == "hold") "HOLD" else "SLIDE ↔",
-                        11f,
-                        Color.WHITE,
-                        startX,
-                        bottom - dp(24f),
-                        Paint.Align.CENTER,
-                    )
-                continue
+        if (endingAt > 0 && now - endingAt > (if (session.failed()) 1100 else 800)) {
+            if (!ended) {
+                ended = true
+                running = false
+                listener.finished(session)
             }
-            val x = note.lane * lane + dp(5f)
-            val shader = tileShaders[if (note.judgement == 3) 2 else note.lane % 2]
-            shaderMatrix.setTranslate(0f, bottom - tileHeight)
-            shader?.setLocalMatrix(shaderMatrix)
-            paint.color = Color.WHITE
-            paint.shader = shader
-            canvas.drawRoundRect(
-                x,
-                bottom - tileHeight,
-                x + lane - dp(10f),
-                bottom,
-                dp(8f),
-                dp(8f),
-                paint,
-            )
+            return
+        }
+        observe(now)
+        val fever = session.multiplier >= 4 && endingAt == 0L
+
+        canvas.drawColor(0xFF07060B.toInt())
+        canvas.save()
+        val shake = now - shakeAt
+        if (shake < 200) canvas.translate(sin(shake / 16f) * dp(5f) * (1 - shake / 200f), 0f)
+        stage?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        if (fever) {
+            paint.shader = sky
+            paint.alpha = (90 + 60 * sin(now / 160f)).toInt()
+            canvas.drawRect(0f, 0f, w, line, paint)
             paint.shader = null
-            paint.color = 0x55FFFFFF
-            canvas.drawRoundRect(
-                x + dp(12f),
-                bottom - dp(10f),
-                x + lane - dp(22f),
-                bottom - dp(7f),
-                dp(2f),
-                dp(2f),
-                paint,
-            )
+            paint.alpha = 255
         }
-        if (now < flashUntil) {
-            paint.color = 0x3385E8D1
-            canvas.drawRect(flashLane * lane, top, (flashLane + 1) * lane, h, paint)
-        }
-        paint.color = 0xFF85E8D1.toInt()
-        canvas.drawRect(0f, line, w, line + dp(2f), paint)
-        paint.color = 0x1185E8D1
-        canvas.drawRect(0f, line - dp(8f), w, line + dp(8f), paint)
-        for (i in trailTime.indices) {
-            val age = now - trailTime[i]
-            if (age in 0..350 && trailTime[i] > 0) {
-                paint.color = (0x85E8D1 or (((1f - age / 350f) * 95).toInt() shl 24))
-                canvas.drawCircle(trailX[i], trailY[i], dp(6f + (1f - age / 350f) * 10), paint)
-            }
-        }
-        if (session.hits > observedHits) {
-            observedHits = session.hits
-            feedback = if (session.lastQuality == 1) "PERFECT" else "GOOD"
-            feedbackUntil = now + 420
-            particles.emit(
-                (session.lastCompletedLane + .5f) * lane,
-                line,
-                0xFF85E8D1.toInt(),
-                density,
-            )
-        }
-        if (session.misses > observedMisses) {
-            observedMisses = session.misses
-            feedback = "MISS"
-            feedbackUntil = now + 420
-        }
+        drawField(canvas, now, time, fever)
+        drawNotes(canvas, time, now)
+        drawStrike(canvas, now, h)
+
         particles.draw(
             canvas,
             paint,
@@ -281,103 +444,513 @@ class GameView(
             density,
         )
         lastFrame = now
-        paint.color = 0xFF111019.toInt()
-        canvas.drawRect(0f, 0f, w, top, paint)
-        val white = 0xFFF6F2FF.toInt()
-        text(canvas, "‹", 34f, white, dp(24f), dp(43f), Paint.Align.LEFT)
-        text(
-            canvas,
-            if (title.length > 25) title.take(23) + "…" else title,
-            15f,
-            white,
-            w / 2,
-            dp(36f),
-            Paint.Align.CENTER,
-        )
-        text(canvas, "Ⅱ", 23f, white, w - dp(26f), dp(40f), Paint.Align.RIGHT)
-        text(
-            canvas,
-            String.format(Locale.US, "%05d", session.score),
-            36f,
-            white,
-            w / 2,
-            dp(90f),
-            Paint.Align.CENTER,
-        )
-        text(
-            canvas,
-            if (session.combo > 1) "${session.combo} COMBO" else "FIND YOUR RHYTHM",
-            10f,
-            0xFFB7A0FF.toInt(),
-            w / 2,
-            dp(115f),
-            Paint.Align.CENTER,
-        )
-        for (i in 0..7) {
-            paint.color = if (i < 8 - session.misses) 0xFF85E8D1.toInt() else 0xFF3C354C.toInt()
-            canvas.drawCircle(w / 2 + (i - 3.5f) * dp(13f), dp(132f), dp(3f), paint)
+        drawFeedback(canvas, now)
+        canvas.restore()
+
+        drawHud(canvas, time, now, fever)
+        if (endingAt > 0) drawEnding(canvas, h, now)
+        else if (!started || (running && countdown < 1f)) drawCountdown(canvas, h, countdown)
+        else if (!running) {
+            paint.color = 0x99000000.toInt()
+            canvas.drawRect(0f, hud, w, h, paint)
         }
-        paint.color = 0xFF262237.toInt()
-        canvas.drawRect(0f, top - dp(3f), w, top, paint)
-        paint.color = 0xFFB7A0FF.toInt()
-        canvas.drawRect(
-            0f,
-            top - dp(3f),
-            w * (maxOf(0.0, time) / (player.duration / 1000.0)).coerceIn(0.0, 1.0).toFloat(),
-            top,
-            paint,
-        )
-        text(
-            canvas,
-            "TAP ON THE LINE",
-            10f,
-            0xFF86829B.toInt(),
-            w / 2,
-            line + dp(36f),
-            Paint.Align.CENTER,
-        )
-        for (i in 0..3) text(
-            canvas,
-            "${i + 1}",
-            12f,
-            0xFF555368.toInt(),
-            (i + .5f) * lane,
-            h - dp(25f),
-            Paint.Align.CENTER,
-        )
-        if (now < feedbackUntil)
+        if (!ended && (running || endingAt > 0)) postInvalidateOnAnimation()
+    }
+
+    /** Turns score and life changes into flashes, particles, banners and haptics. */
+    private fun observe(now: Long) {
+        val lane = w / 4
+        if (session.hits > observedHits) {
+            observedHits = session.hits
+            val perfect = session.lastQuality == 1
+            val color = if (perfect) Palette.MINT else Palette.ACCENT
+            judgement = if (perfect) "PERFECT" else "GOOD"
+            judgementColor = color
+            judgementAt = now
+            comboAt = now
+            val l = session.lastCompletedLane.coerceIn(0, 3)
+            laneGlowAt[l] = now
+            laneGlowColor[l] = color
+            particles.emit((l + .5f) * lane, line, color, density)
+            val combo = session.combo
+            if (combo == 25 || combo == 50 || (combo >= 100 && combo % 50 == 0))
+                banner("$combo COMBO!", Palette.MINT, now)
+        }
+        if (session.bonuses > observedBonuses) {
+            observedBonuses = session.bonuses
+            judgement = "+${GameSession.GOLD_BONUS}  ♥"
+            judgementColor = Palette.GOLD
+            val l = session.lastCompletedLane.coerceIn(0, 3)
+            laneGlowColor[l] = Palette.GOLD
+            particles.emit((l + .5f) * lane, line, Palette.GOLD, density)
+            particles.emit((l + .5f) * lane, line, 0xFFFFF1B8.toInt(), density)
+        }
+        if (session.multiplier != observedMultiplier) {
+            if (session.multiplier > observedMultiplier)
+                banner(
+                    if (session.multiplier >= 4) "FEVER ×4" else "×${session.multiplier}",
+                    tier(session.multiplier),
+                    now,
+                )
+            observedMultiplier = session.multiplier
+        }
+        if (session.misses > observedMisses) {
+            observedMisses = session.misses
+            judgement = "MISS"
+            judgementColor = Palette.RED
+            judgementAt = now
+            shakeAt = now
+            val l = session.lastMissLane.coerceIn(0, 3)
+            laneGlowAt[l] = now
+            laneGlowColor[l] = Palette.RED
+            if (options.haptics)
+                performHapticFeedback(
+                    if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.REJECT
+                    else HapticFeedbackConstants.LONG_PRESS,
+                )
+        }
+        val target = (options.baseScore + session.score).toFloat()
+        displayedScore =
+            if (abs(target - displayedScore) < 1) target
+            else displayedScore + (target - displayedScore) * .25f
+    }
+
+    private fun banner(value: String, color: Int, now: Long) {
+        bannerText = value
+        bannerColor = color
+        bannerAt = now
+    }
+
+    private fun tier(multiplier: Int) =
+        when (multiplier) {
+            2 -> Palette.SKY
+            3 -> Palette.MINT
+            4 -> Palette.GOLD
+            else -> Palette.MUTED
+        }
+
+    private fun drawField(canvas: Canvas, now: Long, time: Double, fever: Boolean) {
+        canvas.save()
+        canvas.concat(field)
+        val lane = w / 4
+        if (fever) {
+            paint.shader = feverFloor
+            paint.alpha = (150 + 100 * sin(now / 140f)).toInt().coerceIn(0, 255)
+            canvas.drawRect(0f, top, w, line, paint)
+            paint.alpha = 255
+        }
+        // Lane glows after hits and misses.
+        for (i in 0..3) {
+            val age = now - laneGlowAt[i]
+            if (age > 280) continue
+            val shader = faceShader(laneGlowColor[i], intArrayOf(0, alpha(laneGlowColor[i], .6f)))
+            val from = worldY(.55f)
+            matrix.setScale(1f, line - from)
+            matrix.postTranslate(0f, from)
+            shader.setLocalMatrix(matrix)
+            paint.shader = shader
+            paint.color = Color.WHITE
+            paint.alpha = ((1 - age / 280f) * 255).toInt()
+            canvas.drawRect(i * lane, from, (i + 1) * lane, line, paint)
+            paint.shader = null
+            paint.alpha = 255
+        }
+        for (k in 0 until pointerLanes.size()) {
+            val i = pointerLanes.valueAt(k)
+            paint.color = 0x14FFFFFF
+            canvas.drawRect(i * lane, worldY(.3f), (i + 1) * lane, line, paint)
+        }
+        // Beat lines rushing toward the player give a sense of speed.
+        var t = ceil(time / BEAT) * BEAT
+        paint.strokeWidth = dp(1.6f)
+        while (t < time + options.travel * 1.05) {
+            val p = progress(t)
+            if (p >= 0) {
+                paint.color = alpha(if (fever) 0x55FCD34D else 0x33A78BFA, 1 - p * .8f)
+                canvas.drawLine(0f, worldY(p), w, worldY(p), paint)
+            }
+            t += BEAT
+        }
+        canvas.restore()
+        if (session.lives <= 2 && endingAt == 0L) {
+            paint.shader = danger
+            paint.color = Color.WHITE
+            paint.alpha = ((.55f + .45f * sin(now / 150f)) * 255).toInt()
+            canvas.drawRect(0f, top, w, line, paint)
+            paint.shader = null
+            paint.alpha = 255
+        }
+        if (session.combo >= 10) {
+            val pop = ((now - comboAt) / 140f).coerceIn(0f, 1f)
+            val y = yAt(.45f)
+            text(canvas, "${session.combo}", 58f + 10f * (1 - pop), 0x24FFFFFF, cx, y, face = heavy)
+            text(canvas, "COMBO", 12f, 0x40FFFFFF, cx, y + dp(22f))
+        }
+    }
+
+    private fun drawNotes(canvas: Canvas, time: Double, now: Long) {
+        val travel = options.travel
+        while (
+            renderIndex < session.notes.size &&
+                session.notes[renderIndex].time + session.notes[renderIndex].duration < time - .6
+        ) renderIndex++
+        var last = renderIndex
+        while (last < session.notes.size && session.notes[last].time - time <= travel * 1.08) last++
+        canvas.save()
+        canvas.clipRect(0f, top - dp(2f), w, line + dp(60f))
+        canvas.save()
+        canvas.concat(field)
+        // Far notes first so near tiles overlap them.
+        for (i in last - 1 downTo renderIndex) {
+            val note = session.notes[i]
+            if (!visible(note, time)) continue
+            if (note.kind == "hold" || note.kind == "slide") drawRail(canvas, note, time)
+            else drawTile(canvas, note, time, now, i)
+        }
+        canvas.restore()
+        // Icons stay upright, so they are drawn in screen space on top.
+        for (i in renderIndex until last) {
+            val note = session.notes[i]
+            if (!visible(note, time) || note.judgement == 3) continue
+            val icon =
+                when (note.kind) {
+                    GameSession.GOLD -> starGlyph
+                    GameSession.AVOID -> bombGlyph
+                    else -> continue
+                }
+            val pb = progress(note.time)
+            val fog = 1 - ((pb - .78f) / .3f).coerceIn(0f, 1f)
+            val mx = xAt(note.lane + .5f, pb + TILE / 2)
+            val my = yAt(pb + TILE / 2)
+            val size = (dp(26f) / depth(pb)).toInt()
+            icon.setBounds((mx - size / 2).toInt(), (my - size / 2).toInt(), (mx + size / 2).toInt(), (my + size / 2).toInt())
+            icon.alpha = (fog * 255).toInt()
+            icon.draw(canvas)
+        }
+        canvas.restore()
+    }
+
+    private fun visible(note: GameSession.Note, time: Double) =
+        note.judgement != 1 && note.judgement != 2 && note.judgement != GameSession.DODGED &&
+            note.time + note.duration - time >= -.6
+
+    private fun drawTile(canvas: Canvas, note: GameSession.Note, time: Double, now: Long, index: Int) {
+        val pb = progress(note.time)
+        val missed = note.judgement == 3
+        val fog = 1 - ((pb - .78f) / .3f).coerceIn(0f, 1f)
+        val fade = if (missed) (1 + pb / .3f).coerceIn(0f, 1f) else 1f
+        val a = fog * fade
+        if (a <= 0f || pb < -.45f) return
+        val lane = w / 4
+        val l = note.lane * lane + lane * .07f
+        val r = (note.lane + 1) * lane - lane * .07f
+        val yb = worldY(pb)
+        val yt = worldY(pb + TILE)
+        val radius = dp(9f)
+        val (colors, side) =
+            when {
+                missed -> intArrayOf(0xFF3A1A2A.toInt(), 0xFF6B2A3F.toInt(), 0xFF9F3550.toInt()) to 0xFF2A0F18.toInt()
+                note.kind == GameSession.GOLD ->
+                    intArrayOf(0xFFB7791F.toInt(), 0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()) to 0xFF7A4E0E.toInt()
+                note.kind == GameSession.AVOID ->
+                    intArrayOf(0xFF1C0A12.toInt(), 0xFF3B1022.toInt(), 0xFF6B1530.toInt()) to 0xFF12060B.toInt()
+                else -> intArrayOf(0xFF4A2FC0.toInt(), 0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()) to 0xFF2B1B78.toInt()
+            }
+        // Side face below the tile gives it visible thickness.
+        paint.shader = null
+        paint.color = alpha(side, a)
+        canvas.drawRoundRect(l + dp(1f), yb - radius, r - dp(1f), yb + dp(11f), radius, radius, paint)
+        // Top face with a vertical gradient, brightest nearest the player.
+        val shader = faceShader(colors[1] xor colors[2], colors)
+        matrix.setScale(1f, yb - yt)
+        matrix.postTranslate(0f, yt)
+        shader.setLocalMatrix(matrix)
+        paint.shader = shader
+        paint.color = Color.WHITE
+        paint.alpha = (a * 255).toInt()
+        rect.set(l, yt, r, yb)
+        canvas.drawRoundRect(rect, radius, radius, paint)
+        gloss?.let {
+            matrix.setScale(1f, (yb - yt) * .55f)
+            matrix.postTranslate(0f, yt)
+            it.setLocalMatrix(matrix)
+            paint.shader = it
+            canvas.drawRoundRect(rect, radius, radius, paint)
+        }
+        paint.shader = null
+        paint.alpha = 255
+        val delta = note.time - time
+        val danger = note.kind == GameSession.AVOID
+        if (!missed && (danger || abs(delta) <= GameSession.WINDOW)) {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(3f)
+            paint.color = if (danger) alpha(Palette.RED, (.55f + .45f * sin(now / 90f)) * a) else 0xE6FFFFFF.toInt()
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.style = Paint.Style.FILL
+        }
+        if (!missed && note.kind == "tap") {
+            paint.color = alpha(0x99FFFFFF.toInt(), a)
+            canvas.drawRoundRect(l + lane * .2f, yb - dp(14f), r - lane * .2f, yb - dp(10f), dp(2f), dp(2f), paint)
+        }
+        // Chords: link tiles that share a moment so two fingers feel natural.
+        val next = session.notes.getOrNull(index + 1)
+        if (
+            next != null && abs(next.time - note.time) < .001 && next.kind != GameSession.AVOID &&
+                note.kind != GameSession.AVOID && next.judgement == 0 && note.judgement == 0
+        ) {
+            val from = (minOf(note.lane, next.lane) + 1) * lane - lane * .07f
+            val to = maxOf(note.lane, next.lane) * lane + lane * .07f
+            paint.color = alpha(0xCCE9E3FF.toInt(), a)
+            canvas.drawRoundRect(from, yb - dp(10f), to, yb - dp(4f), dp(3f), dp(3f), paint)
+        }
+    }
+
+    private fun drawRail(canvas: Canvas, note: GameSession.Note, time: Double) {
+        val active = note.judgement == 4
+        val missed = note.judgement == 3
+        val color = if (missed) 0xFF6B4252.toInt() else if (note.kind == "hold") Palette.MINT else Palette.SKY
+        val start = if (active) maxOf(time, note.time) else note.time
+        val end = note.time + note.duration
+        val lane = w / 4
+        val p0 = maxOf(progress(start), if (active) 0f else -.45f)
+        val p1 = minOf(progress(end), 1.1f)
+        if (p1 < p0) return
+        val x0 = note.laneAt(start) * lane
+        // Slides move linearly between lanes, so in world space the rail is a straight segment.
+        val tEnd = if (p1 < progress(end)) time + p1 * options.travel else end
+        val x1 = note.laneAt(tEnd) * lane
+        val y0 = worldY(p0)
+        val y1 = worldY(p1)
+        val fog = maxOf(.3f, 1 - ((p0 - .78f) / .3f).coerceIn(0f, 1f))
+        paint.shader = null
+        paint.style = Paint.Style.STROKE
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.color = alpha(color, (if (active) .42f else .26f) * fog)
+        paint.strokeWidth = lane * .72f
+        canvas.drawLine(x0, y0, x1, y1, paint)
+        paint.color = alpha(color, fog)
+        paint.strokeWidth = dp(5f)
+        canvas.drawLine(x0, y0, x1, y1, paint)
+        if (note.kind == "slide" && note.endLane != note.lane && !missed) {
+            // Chevrons show which way to slide.
+            val dir = if (note.endLane > note.lane) 1f else -1f
+            paint.strokeWidth = dp(3f)
+            paint.color = 0xE6FFFFFF.toInt()
+            var n = 0
+            for (k in 1..5) {
+                val f = k / 6f
+                val cxw = x0 + (x1 - x0) * f
+                val cyw = y0 + (y1 - y0) * f
+                val s = dp(7f)
+                lineBuffer[n++] = cxw - dir * s; lineBuffer[n++] = cyw - s
+                lineBuffer[n++] = cxw + dir * s * .6f; lineBuffer[n++] = cyw
+                lineBuffer[n++] = cxw + dir * s * .6f; lineBuffer[n++] = cyw
+                lineBuffer[n++] = cxw - dir * s; lineBuffer[n++] = cyw + s
+            }
+            canvas.drawLines(lineBuffer, 0, n, paint)
+        }
+        paint.style = Paint.Style.FILL
+        paint.color = color
+        canvas.drawCircle(x1, y1, lane * .12f, paint)
+        if (active) {
+            paint.color = alpha(color, .3f)
+            canvas.drawCircle(x0, y0, lane * .42f, paint)
+        }
+        paint.color = alpha(color, fog)
+        canvas.drawCircle(x0, y0, lane * .24f, paint)
+        paint.color = 0xFF14121D.toInt()
+        canvas.drawCircle(x0, y0, lane * .09f, paint)
+    }
+
+    private fun drawStrike(canvas: Canvas, now: Long, h: Float) {
+        paint.shader = strikeGlow
+        paint.color = Color.WHITE
+        canvas.drawRect(0f, line - dp(46f), w, line, paint)
+        paint.shader = null
+        paint.color = 0xFFEDE9FE.toInt()
+        canvas.drawRoundRect(0f, line - dp(2f), w, line + dp(2f), dp(2f), dp(2f), paint)
+        val lane = w / 4
+        for (i in 0..3) {
+            var pressed = false
+            for (k in 0 until pointerLanes.size()) if (pointerLanes.valueAt(k) == i) pressed = true
+            val glow = (1 - (now - laneGlowAt[i]) / 240f).coerceIn(0f, 1f)
+            val l = i * lane + dp(6f)
+            val r = (i + 1) * lane - dp(6f)
+            val sink = if (pressed) dp(3f) else 0f
+            val t = line + dp(12f) + sink
+            val b = h - dp(16f)
+            // Raised key: darker base gives it height; pressing sinks the face.
+            paint.color = 0xFF07060B.toInt()
+            canvas.drawRoundRect(l, line + dp(15f), r, h - dp(10f), dp(16f), dp(16f), paint)
+            paint.color = if (pressed) 0xFF2F2752.toInt() else 0xFF1A1727.toInt()
+            canvas.drawRoundRect(l, t, r, b, dp(16f), dp(16f), paint)
+            if (glow > 0) {
+                paint.color = alpha(laneGlowColor[i], .55f * glow)
+                canvas.drawRoundRect(l, t, r, b, dp(16f), dp(16f), paint)
+            }
+            paint.color = if (pressed) 0x66FFFFFF else 0x14FFFFFF
+            canvas.drawRoundRect(l + dp(1f), t + dp(1f), r - dp(1f), t + dp(3f), dp(2f), dp(2f), paint)
+            paint.color = if (pressed) Palette.ACCENT else 0x40A78BFA
+            canvas.drawCircle((l + r) / 2, (t + b) / 2, dp(4f), paint)
+        }
+    }
+
+    private fun drawFeedback(canvas: Canvas, now: Long) {
+        val age = now - judgementAt
+        if (age < 450 && judgement.isNotEmpty()) {
+            val pop = (age / 110f).coerceIn(0f, 1f)
             text(
                 canvas,
-                feedback,
-                21f,
-                if (feedback == "MISS") 0xFFFF94B3.toInt() else 0xFFADFFF0.toInt(),
-                w / 2,
-                line - dp(44f),
-                Paint.Align.CENTER,
-            )
-        if (!started) {
-            paint.color = 0x550F0C19
-            canvas.drawRect(0f, top, w, h, paint)
-            text(
-                canvas,
-                "${maxOf(1, 3 - countdown.toInt())}",
-                72f,
-                white,
-                w / 2,
-                h * .49f,
-                Paint.Align.CENTER,
-            )
-            text(
-                canvas,
-                "Tap · hold · slide at the glowing line",
-                14f,
-                0xFFCDC6DF.toInt(),
-                w / 2,
-                h * .49f + dp(40f),
-                Paint.Align.CENTER,
+                judgement,
+                20f + 7f * (1 - pop),
+                alpha(judgementColor, 1 - ((age - 250) / 200f).coerceIn(0f, 1f)),
+                cx,
+                line - dp(64f) - dp(6f) * pop,
+                face = heavy,
             )
         }
-        if (running && !ended) postInvalidateOnAnimation()
+        val b = now - bannerAt
+        if (b < 1000 && bannerText.isNotEmpty()) {
+            val pop = (b / 160f).coerceIn(0f, 1f)
+            val scale = 1.4f - .4f * pop
+            val fade = 1 - ((b - 700) / 300f).coerceIn(0f, 1f)
+            val y = yAt(.62f)
+            text(canvas, bannerText, 34f * scale, alpha(0x66000000, fade), cx + dp(2f), y + dp(2f), face = heavy)
+            text(canvas, bannerText, 34f * scale, alpha(bannerColor, fade), cx, y, face = heavy)
+        }
+    }
+
+    private fun drawHud(canvas: Canvas, time: Double, now: Long, fever: Boolean) {
+        paint.shader = null
+        paint.color = 0xF20B0A12.toInt()
+        canvas.drawRect(0f, 0f, w, hud, paint)
+        val duration = clock.durationMs / 1000.0
+        paint.color = 0xFF221F2D.toInt()
+        canvas.drawRect(0f, 0f, w, dp(3f), paint)
+        val from = options.startMs / 1000.0
+        val to = if (options.endMs > 0) options.endMs / 1000.0 else duration
+        if (to > from) {
+            paint.color = if (fever) Palette.GOLD else Palette.ACCENT
+            canvas.drawRect(0f, 0f, w * ((time - from) / (to - from)).coerceIn(0.0, 1.0).toFloat(), dp(3f), paint)
+        }
+        val score = String.format(Locale.US, "%,d", displayedScore.toInt())
+        text(canvas, score, 24f, Palette.TEXT, dp(18f), dp(42f), Paint.Align.LEFT, heavy)
+        val m = session.multiplier
+        if (m > 1) {
+            paint.textSize = dp(24f)
+            paint.typeface = heavy
+            val x = dp(18f) + paint.measureText(score) + dp(10f)
+            val color = tier(m)
+            val pulse = if (m >= 4) .75f + .25f * sin(now / 110f) else 1f
+            paint.color = alpha(color, .22f * pulse)
+            canvas.drawRoundRect(x, dp(22f), x + dp(40f), dp(46f), dp(12f), dp(12f), paint)
+            text(canvas, "×$m", 14f, color, x + dp(20f), dp(39f), face = heavy)
+        }
+        if (options.timeLimitMs > 0) {
+            val left = maxOf(0L, timeLeftMs)
+            val seconds = ceil(left / 1000.0).toInt()
+            val urgent = left < 10_000
+            val label = String.format(Locale.US, "%d:%02d", seconds / 60, seconds % 60)
+            paint.color = if (urgent) alpha(Palette.RED, .25f + .15f * sin(now / 120f)) else 0xFF221F2D.toInt()
+            canvas.drawRoundRect(w - dp(160f), dp(18f), w - dp(66f), dp(50f), dp(16f), dp(16f), paint)
+            text(canvas, label, 18f, if (urgent) Palette.RED else Palette.TEXT, w - dp(113f), dp(41f), face = heavy)
+            drawPause(canvas)
+            return
+        }
+        val size = dp(13f)
+        val gap = dp(3f)
+        val total = GameSession.MAX_LIVES * size + (GameSession.MAX_LIVES - 1) * gap
+        val start = w - dp(70f) - total
+        for (i in 0 until GameSession.MAX_LIVES) {
+            val x = start + i * (size + gap)
+            val glyph = if (i < session.lives) heart else heartEmpty
+            glyph.setBounds(x.toInt(), dp(27f).toInt(), (x + size).toInt(), (dp(27f) + size).toInt())
+            glyph.draw(canvas)
+        }
+        drawPause(canvas)
+    }
+
+    private fun drawPause(canvas: Canvas) {
+        paint.color = 0xFF221F2D.toInt()
+        canvas.drawCircle(w - dp(34f), dp(34f), dp(19f), paint)
+        pauseGlyph.setBounds((w - dp(44f)).toInt(), dp(24f).toInt(), (w - dp(24f)).toInt(), dp(44f).toInt())
+        pauseGlyph.draw(canvas)
+    }
+
+    private fun drawCountdown(canvas: Canvas, h: Float, progress: Float) {
+        paint.color = 0xA6000000.toInt()
+        canvas.drawRect(0f, hud, w, h, paint)
+        val length = if (started) RESUME_MS else INTRO_MS
+        val remaining = ceil((1 - progress.coerceIn(0f, 1f)) * length / 600f).toInt().coerceAtLeast(1)
+        val cy = (hud + line) / 2 - (if (!started && options.introduce.isNotEmpty()) dp(70f) else 0f)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = dp(4f)
+        paint.color = 0x33FFFFFF
+        canvas.drawCircle(cx, cy, dp(54f), paint)
+        paint.color = Palette.ACCENT
+        paint.strokeCap = Paint.Cap.ROUND
+        canvas.drawArc(cx - dp(54f), cy - dp(54f), cx + dp(54f), cy + dp(54f), -90f, 360f * progress.coerceIn(0f, 1f), false, paint)
+        paint.style = Paint.Style.FILL
+        text(canvas, "$remaining", 56f, Palette.TEXT, cx, cy + dp(20f), face = heavy)
+        if (started) return
+        var y = cy + dp(100f)
+        if (options.caption.isNotEmpty()) {
+            text(canvas, options.caption, 16f, Palette.TEXT, cx, y, face = heavy)
+            y += dp(48f)
+        }
+        if (options.hint) {
+            text(canvas, "Tap tiles as they reach the line", 15f, Palette.TEXT, cx, y)
+            text(canvas, "Hold green rails · follow blue slides", 13f, Palette.MUTED, cx, y + dp(22f))
+            y += dp(60f)
+        }
+        for (kind in options.introduce) {
+            val (title, detail, colors) =
+                when (kind) {
+                    GameSession.GOLD -> Triple("Gold tile", "Bonus points and a life back", intArrayOf(0xFFF6C744.toInt(), 0xFFFFF1B8.toInt()))
+                    GameSession.AVOID -> Triple("Bomb tile", "Don't touch it", intArrayOf(0xFF3B1022.toInt(), 0xFF6B1530.toInt()))
+                    else -> Triple("Chord", "Two tiles at once, use two fingers", intArrayOf(0xFF7C5CF2.toInt(), 0xFFC9BBFF.toInt()))
+                }
+            val left = cx - dp(140f)
+            paint.color = 0xE61A1727.toInt()
+            canvas.drawRoundRect(left, y - dp(30f), cx + dp(140f), y + dp(30f), dp(16f), dp(16f), paint)
+            paint.shader = faceShader(colors[0] xor 7, colors)
+            matrix.setScale(1f, dp(36f))
+            matrix.postTranslate(0f, y - dp(18f))
+            paint.shader.setLocalMatrix(matrix)
+            paint.color = Color.WHITE
+            canvas.drawRoundRect(left + dp(14f), y - dp(18f), left + dp(54f), y + dp(18f), dp(6f), dp(6f), paint)
+            paint.shader = null
+            val icon = if (kind == GameSession.GOLD) starGlyph else if (kind == GameSession.AVOID) bombGlyph else null
+            icon?.let {
+                it.alpha = 255
+                it.setBounds((left + dp(22f)).toInt(), (y - dp(12f)).toInt(), (left + dp(46f)).toInt(), (y + dp(12f)).toInt())
+                it.draw(canvas)
+            }
+            text(canvas, "NEW · $title", 14f, Palette.TEXT, left + dp(68f), y - dp(3f), Paint.Align.LEFT, heavy)
+            text(canvas, detail, 12.5f, Palette.MUTED, left + dp(68f), y + dp(16f), Paint.Align.LEFT)
+            y += dp(72f)
+        }
+    }
+
+    private fun drawEnding(canvas: Canvas, h: Float, now: Long) {
+        val fade = ((now - endingAt) / 400f).coerceIn(0f, 1f)
+        paint.color = alpha(0xCC0D0C12.toInt(), fade)
+        canvas.drawRect(0f, hud, w, h, paint)
+        val failed = session.failed()
+        val scale = 1.3f - .3f * fade
+        text(
+            canvas,
+            when {
+                failed -> "Out of lives"
+                timedOut -> "Time's up!"
+                else -> options.segmentDone
+            },
+            30f * scale,
+            alpha(if (failed || timedOut) Palette.RED else Palette.GOLD, fade),
+            cx,
+            (hud + h) / 2,
+            face = heavy,
+        )
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -387,58 +960,45 @@ class GameView(
         val down =
             event.actionMasked == MotionEvent.ACTION_DOWN ||
                 event.actionMasked == MotionEvent.ACTION_POINTER_DOWN
-        if (down && y < dp(65f)) {
-            pause()
-            listener.pauseRequested()
+        if (down && y < hud && x > width - dp(80f)) {
+            if (endingAt == 0L) {
+                pause()
+                listener.pauseRequested()
+            }
             return true
         }
-        if (!started || !running || ended) return true
-        val lane = (x / (width / 4f)).toInt().coerceIn(0, 3)
-        val time = player.currentPosition / 1000.0 + offset
+        if (!rolling || ended || endingAt > 0) return true
+        val laneWidth = width / 4f
+        val lane = (x / laneWidth).toInt().coerceIn(0, 3)
+        val time = clock.positionMs / 1000.0 + offset
         var result = 0
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN,
-            MotionEvent.ACTION_POINTER_DOWN ->
-                result = session.press(lane, time, event.getPointerId(index), x / (width / 4f))
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                pointerLanes.put(event.getPointerId(index), lane)
+                result = session.press(lane, time, event.getPointerId(index), x / laneWidth)
+            }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
-                    val judgement =
-                        session.move(event.getPointerId(i), event.getX(i) / (width / 4f), time)
-                    if (judgement > 0) result = judgement
+                    val id = event.getPointerId(i)
+                    pointerLanes.put(id, (event.getX(i) / laneWidth).toInt().coerceIn(0, 3))
+                    val judgement = session.move(id, event.getX(i) / laneWidth, time)
+                    if (judgement in 1..2) result = judgement
                 }
             }
             MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_POINTER_UP -> session.release(event.getPointerId(index), time)
-            MotionEvent.ACTION_CANCEL ->
-                for (i in 0 until event.pointerCount) session.release(event.getPointerId(i), time)
-        }
-        if (
-            event.actionMasked != MotionEvent.ACTION_UP &&
-                event.actionMasked != MotionEvent.ACTION_POINTER_UP
-        ) {
-            val slot = trailCursor++ % trailTime.size
-            trailX[slot] = x
-            trailY[slot] = y
-            trailTime[slot] = SystemClock.uptimeMillis()
-        }
-        if (result == 0) {
-            invalidate()
-            return true
-        }
-        feedback =
-            when (result) {
-                1 -> "PERFECT"
-                2 -> "GOOD"
-                4 -> session.activeKind(event.getPointerId(index))?.uppercase() ?: "FLOW"
-                else -> "MISS"
+            MotionEvent.ACTION_POINTER_UP -> {
+                pointerLanes.delete(event.getPointerId(index))
+                session.release(event.getPointerId(index), time)
             }
-        feedbackUntil = SystemClock.uptimeMillis() + 420
-        flashLane = lane
-        flashUntil = SystemClock.uptimeMillis() + 100
-        if (result != 3 && down) {
-            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            MotionEvent.ACTION_CANCEL -> {
+                for (i in 0 until event.pointerCount) session.release(event.getPointerId(i), time)
+                pointerLanes.clear()
+            }
         }
-        performClick()
+        if (options.haptics && result != 0 && result != 3 && down)
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (down) performClick()
         invalidate()
         return true
     }
@@ -449,6 +1009,19 @@ class GameView(
     }
 
     companion object {
-        private const val TRAVEL = 1.7
+        private const val INTRO_MS = 1800L
+        private const val RESUME_MS = 1800L
+
+        /** How much smaller the far end of the field is than the strike line. */
+        private const val FAR = 2.1f
+
+        /** Tile length as a fraction of the field. */
+        private const val TILE = .15f
+
+        /** Beat-line spacing in song seconds. */
+        private const val BEAT = .5
+
+        /** Song-seconds a tile spends falling, for the Slow / Normal / Fast note speeds. */
+        val TRAVEL = doubleArrayOf(2.2, 1.7, 1.3)
     }
 }

@@ -138,4 +138,17 @@ class GameSessionTest {
         assertEquals(1, game.move(1, 1.5f, 5.0))
         assertEquals(1, game.hits)
     }
+
+    @Test
+    fun hitStreaksRestoreLostLivesUpToTheMaximum() {
+        val game = song(80)
+        repeat(3) { assertEquals(3, game.tap(3, 0.0)) }
+        assertEquals(GameSession.MAX_LIVES - 3, game.lives)
+        for (i in 0 until 25) game.tap(i % 4, i + 1.0)
+        assertEquals(GameSession.MAX_LIVES - 2, game.lives)
+        for (i in 25 until 80) game.tap(i % 4, i + 1.0)
+        assertEquals(GameSession.MAX_LIVES, game.lives)
+        assertEquals(3, game.misses)
+        assertFalse(game.failed())
+    }
 }

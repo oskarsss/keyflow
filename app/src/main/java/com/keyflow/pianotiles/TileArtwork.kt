@@ -46,7 +46,7 @@ class TileArtwork(context: Context, private val variant: Int) : View(context) {
         val h = height.toFloat()
         paint.color = Color.WHITE
         paint.shader = backdrop
-        canvas.drawRoundRect(0f, 0f, w, h, 24f, 24f, paint)
+        canvas.drawRect(0f, 0f, w, h, paint)
         paint.shader = null
         paint.color = 0x227CBDE0
         for (i in 1..3) canvas.drawRect(i * w / 4 - 1, 0f, i * w / 4 + 1, h, paint)

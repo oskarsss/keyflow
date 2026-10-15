@@ -2,7 +2,6 @@ package com.keyflow.pianotiles
 
 import android.app.Activity
 import android.graphics.Rect
-import android.media.MediaPlayer
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -112,7 +111,11 @@ class GamePlayTest {
             }
     }
 
-    private fun screenshot(name: String) {
+    private fun screenshot(name: String, settleMs: Long = 0) {
+        if (settleMs > 0) {
+            instrumentation.waitForIdleSync()
+            Thread.sleep(settleMs)
+        }
         val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: return
         val folder = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
         File(folder, "$name.png").outputStream().use {
@@ -125,25 +128,22 @@ class GamePlayTest {
     fun completeDemoWithTouchInputAndUnlockNextSong() {
         val store = LibraryStore(context)
         store.save(store.demo())
-        store.prefs
-            .edit()
-            .putFloat("speed", 1f)
-            .putInt("timingOffset", 0)
-            .remove("song.first-light.completed")
-            .remove("song.first-light.stars")
-            .remove("song.first-light.score")
-            .apply()
+        val reset = store.prefs.edit().putFloat("speed", 1f).putInt("timingOffset", 0)
+        // Every built-in level starts locked again, so repeated runs see the same progress.
+        for (id in listOf("first-light", "violet-hour", "afterglow"))
+            for (key in listOf("completed", "stars", "score")) reset.remove("song.$id.$key")
+        reset.apply()
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity = it }
             waitFor {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "Play level  →"
+                        it.text.toString() == "Play"
                     }
                 }
             }
             screenshot("demo-library")
-            clickText("Play level  →")
+            clickText("Play")
             var game: GameView? = null
             waitFor {
                 game = onMain {
@@ -152,18 +152,14 @@ class GamePlayTest {
                 game != null
             }
             val view = game!!
-            val player =
-                GameView::class
-                    .java
-                    .getDeclaredField("player")
-                    .apply { isAccessible = true }
-                    .get(view) as MediaPlayer
+            val player = view.clock
             val density = context.resources.displayMetrics.density
             for ((index, note) in view.session.notes.withIndex()) {
+                if (note.kind == GameSession.AVOID) continue
                 waitFor {
                     onMain {
                         if (
-                            player.isPlaying && player.currentPosition / 1000.0 >= note.time - .040
+                            player.isPlaying && player.positionMs / 1000.0 >= note.time - .040
                         ) {
                             dispatchLane(view, note.lane)
                             true
@@ -172,7 +168,7 @@ class GamePlayTest {
                 }
                 assertEquals(
                     "Note $index: expected touchscreen hit at ${note.time}s; misses=${view.session.misses}",
-                    index + 1,
+                    view.session.notes.take(index + 1).count { it.kind != GameSession.AVOID },
                     view.session.hits,
                 )
                 if (index == 12) {
@@ -181,42 +177,33 @@ class GamePlayTest {
                     tap(position[0] + view.width - 24 * density, position[1] + 30 * density)
                     waitFor { onMain { !player.isPlaying } }
                     screenshot("demo-gameplay")
-                    val pausedTime = onMain { player.currentPosition }
+                    val pausedTime = onMain { player.positionMs }
                     Thread.sleep(250)
-                    assertEquals(pausedTime, onMain { player.currentPosition })
-                    // Dialog is a separate window; read its visible button coordinates.
-                    val dialog =
-                        MainActivity::class
-                            .java
-                            .getDeclaredField("pauseDialog")
-                            .apply { isAccessible = true }
-                            .get(activity) as android.app.AlertDialog
-                    val resume = onMain {
-                        dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE)
-                    }
-                    val xy = onMain { IntArray(2).also { resume.getLocationOnScreen(it) } }
-                    tap(xy[0] + resume.width / 2f, xy[1] + resume.height / 2f)
+                    assertEquals(pausedTime, onMain { player.positionMs })
+                    // The pause menu is an in-game overlay; resuming runs a short countdown.
+                    clickText("Resume")
                 }
             }
             waitFor(6000) {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "LEVEL COMPLETE"
+                        it.text.toString() == "Level cleared"
                     }
                 }
             }
-            screenshot("demo-results")
+            screenshot("demo-results", 800)
             assertTrue(view.session.passed())
             assertEquals(48, view.session.hits)
+            assertTrue(view.session.notes.any { it.kind == GameSession.GOLD })
             assertEquals(0, view.session.misses)
             assertEquals(3, view.session.stars())
             assertTrue(store.completed(store.songs().getJSONObject(0)))
             assertTrue(store.unlocked(1))
-            clickText("Back to my journey")
+            clickText("Levels")
             waitFor {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "33%"
+                        it.text.toString() == "1 of 3 cleared"
                     }
                 }
             }
@@ -225,13 +212,13 @@ class GamePlayTest {
             waitFor {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "33%"
+                        it.text.toString() == "1 of 3 cleared"
                     }
                 }
             }
             screenshot("demo-progress-saved")
             // Play the newly unlocked second level through its hold and slide patterns.
-            clickText("Play level  →")
+            clickText("Play")
             var gestureView: GameView? = null
             waitFor {
                 gestureView = onMain {
@@ -240,21 +227,17 @@ class GamePlayTest {
                 gestureView != null
             }
             val flow = gestureView!!
-            val flowPlayer =
-                GameView::class
-                    .java
-                    .getDeclaredField("player")
-                    .apply { isAccessible = true }
-                    .get(flow) as MediaPlayer
+            val flowPlayer = flow.clock
             assertTrue(flow.session.notes.any { it.kind == "hold" })
             assertTrue(flow.session.notes.any { it.kind == "slide" })
             var capturedHold = false
             for ((index, note) in flow.session.notes.withIndex()) {
+                if (note.kind == GameSession.AVOID) continue
                 waitFor {
                     onMain {
                         if (
                             flowPlayer.isPlaying &&
-                                flowPlayer.currentPosition / 1000.0 >= note.time - .040
+                                flowPlayer.positionMs / 1000.0 >= note.time - .040
                         ) {
                             if (note.kind == "tap") dispatchLane(flow, note.lane)
                             else dispatchGesture(flow, note.lane + .5f, MotionEvent.ACTION_DOWN)
@@ -269,7 +252,7 @@ class GamePlayTest {
                     }
                     waitFor {
                         onMain {
-                            val time = flowPlayer.currentPosition / 1000.0
+                            val time = flowPlayer.positionMs / 1000.0
                             if (time >= note.time + note.duration - .025) {
                                 dispatchGesture(flow, note.laneAt(time), MotionEvent.ACTION_UP)
                                 true
@@ -280,19 +263,23 @@ class GamePlayTest {
                         }
                     }
                 }
-                assertEquals("Gesture $index (${note.kind})", index + 1, flow.session.hits)
+                assertEquals(
+                    "Gesture $index (${note.kind})",
+                    flow.session.notes.take(index + 1).count { it.kind != GameSession.AVOID },
+                    flow.session.hits,
+                )
             }
             waitFor(6000) {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "LEVEL COMPLETE"
+                        it.text.toString() == "Level cleared"
                     }
                 }
             }
             assertEquals(0, flow.session.misses)
             assertEquals(3, flow.session.stars())
             assertTrue(store.unlocked(2))
-            screenshot("gesture-level-complete")
+            screenshot("gesture-level-complete", 800)
         }
     }
 
@@ -313,7 +300,7 @@ class GamePlayTest {
             scenario.onActivity { activity = it }
             waitFor(60000) { store.offline(store.songs().getJSONObject(0)) }
             screenshot("playlist-library")
-            clickText("Play level  →")
+            clickText("Play")
             var current: GameView? = null
             waitFor {
                 current = onMain {
@@ -322,17 +309,13 @@ class GamePlayTest {
                 current != null
             }
             val view = current!!
-            val player =
-                GameView::class
-                    .java
-                    .getDeclaredField("player")
-                    .apply { isAccessible = true }
-                    .get(view) as MediaPlayer
+            val player = view.clock
             for ((index, note) in view.session.notes.take(40).withIndex()) {
+                if (note.kind == GameSession.AVOID) continue
                 waitFor {
                     onMain {
                         if (
-                            player.isPlaying && player.currentPosition / 1000.0 >= note.time - .040
+                            player.isPlaying && player.positionMs / 1000.0 >= note.time - .040
                         ) {
                             if (note.kind == "tap") dispatchLane(view, note.lane)
                             else dispatchGesture(view, note.lane + .5f, MotionEvent.ACTION_DOWN)
@@ -343,7 +326,7 @@ class GamePlayTest {
                 if (note.kind != "tap")
                     waitFor {
                         onMain {
-                            val time = player.currentPosition / 1000.0
+                            val time = player.positionMs / 1000.0
                             if (time >= note.time + note.duration - .025) {
                                 dispatchGesture(view, note.laneAt(time), MotionEvent.ACTION_UP)
                                 true
@@ -353,7 +336,11 @@ class GamePlayTest {
                             }
                         }
                     }
-                assertEquals("Live note $index", index + 1, view.session.hits)
+                assertEquals(
+                    "Live note $index",
+                    view.session.notes.take(index + 1).count { it.kind != GameSession.AVOID },
+                    view.session.hits,
+                )
             }
             screenshot("playlist-gameplay")
             // Eight rapid wrong-lane taps exercise the actual failure screen.
@@ -361,18 +348,18 @@ class GamePlayTest {
             waitFor {
                 onMain {
                     views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "KEEP THE RHYTHM"
+                        it.text.toString() == "Out of lives"
                     }
                 }
             }
             assertTrue(view.session.failed())
             assertEquals(0, view.session.stars())
-            screenshot("playlist-failure")
-            clickText("Back to my journey")
+            screenshot("playlist-failure", 800)
+            clickText("Levels")
             waitFor {
                 onMain {
-                    views(activity.window.decorView).filterIsInstance<TextView>().any {
-                        it.text.toString() == "YOUR MIX"
+                    views(activity.window.decorView).any {
+                        it.contentDescription == "Switch playlist"
                     }
                 }
             }

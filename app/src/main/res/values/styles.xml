@@ -2,8 +2,16 @@
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:colorAccent">#B7A0FF</item>
+        <item name="android:colorAccent">#A78BFA</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:windowBackground">#101019</item>
+        <item name="android:windowBackground">#0D0C12</item>
+        <item name="android:alertDialogTheme">@style/Dialog</item>
+        <item name="android:textCursorDrawable">@null</item>
+    </style>
+    <style name="Dialog" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#A78BFA</item>
+        <item name="android:colorBackground">#1C1A26</item>
+        <item name="android:textColorPrimary">#F5F3FA</item>
+        <item name="android:textColorSecondary">#B4AFC6</item>
     </style>
 </resources>
