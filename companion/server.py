@@ -13,6 +13,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import random
 import secrets
 import shutil
 import statistics
@@ -113,11 +114,15 @@ class Library:
             try:
                 item = json.loads(path.read_text())
                 for song in item["songs"]:
-                    if song["status"] == "caching":
+                    if song["status"] == "caching" or (song["status"] == "ready" and not self.cached(song)):
                         song["status"] = "pending"
                 self.playlists[item["id"]] = item
             except (ValueError, KeyError):
                 pass
+
+    def cached(self, song):
+        directory = self.directory / song["id"]
+        return (directory / "audio.mp3").is_file() and (directory / "chart.json").is_file()
 
     def snapshot(self, value):
         with self.lock:
@@ -147,13 +152,14 @@ class Library:
                                      "--yes-playlist", "--playlist-end", str(MAX_SONGS),
                                      "--socket-timeout", "20", "--", url],
                                     capture_output=True, text=True, timeout=180)
-            (self.directory/("import-"+hashlib.sha256(url.encode()).hexdigest()[:20]+".log")).write_text(result.stderr[-100000:])
+            identifier = secrets.token_hex(12)
+            (self.directory/("import-"+identifier+".log")).write_text(result.stderr[-100000:])
             if result.returncode != 0:
                 raise ValueError("Playlist unavailable. Use a public or unlisted playlist; check the server's yt-dlp installation.")
             raw = json.loads(result.stdout)
-            identifier = hashlib.sha256(url.encode()).hexdigest()[:20]
-            old = self.playlists.get(identifier, {})
-            existing = {s["id"]: s for s in old.get("songs", [])}
+            with self.lock:
+                existing = {s["id"]: dict(s) for p in self.playlists.values() for s in p["songs"]
+                            if s.get("status") == "ready"}
             songs = []
             for entry in raw.get("entries", []):
                 if not entry or not re.fullmatch(r"[A-Za-z0-9_-]{11}", str(entry.get("id", ""))):
@@ -168,13 +174,14 @@ class Library:
                         "thumbnail": thumbs[-1].get("url", "") if thumbs else "",
                         "status": "pending"}
                 cached = existing.get(sid)
-                if cached and cached.get("status") == "ready" and (self.directory/sid/"audio.mp3").exists():
+                if cached and (self.directory/sid/"audio.mp3").is_file() and (self.directory/sid/"chart.json").is_file():
                     song.update(cached)
                 songs.append(song)
             if not songs:
                 raise ValueError("No playable songs found in this playlist.")
-            count = prefetch if prefetch is not None else old.get("preloadCount", self.prefetch)
-            playlist = {"id": identifier, "title": raw.get("title") or "My playlist", "url": url, "songs": songs, "preloadCount": count}
+            random.shuffle(songs)
+            count = prefetch if prefetch is not None else self.prefetch
+            playlist = {"id": identifier, "title": raw.get("title") or "My playlist", "songs": songs, "preloadCount": count}
             with self.lock:
                 self.playlists[identifier] = playlist
                 job.update(status="caching", message="Preparing your first songs…", playlist=playlist)
@@ -195,7 +202,7 @@ class Library:
             song = next((s for s in playlist["songs"] if s["id"] == song_id), None)
             if not song:
                 raise ValueError("Song not found.")
-            if song["status"] not in {"ready", "caching"}:
+            if song["status"] != "caching" and not (song["status"] == "ready" and self.cached(song)):
                 song.update(status="caching", error="")
                 self.executor.submit(self.cache_song, playlist, song)
             return self.snapshot(song)
@@ -214,7 +221,7 @@ class Library:
             return self.snapshot(playlist)
 
     def cache_song(self, playlist, song):
-        if song["status"] == "ready":
+        if song["status"] == "ready" and self.cached(song):
             return
         sid = song["id"]
         directory = self.directory/sid

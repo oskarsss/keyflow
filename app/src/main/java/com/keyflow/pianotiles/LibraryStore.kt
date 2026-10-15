@@ -7,15 +7,20 @@ import org.json.JSONObject
 
 class LibraryStore(private val context: Context) {
     val prefs = context.getSharedPreferences("keyflow", Context.MODE_PRIVATE)
-    var playlist: JSONObject? = runCatching {
-        JSONObject(prefs.getString("playlist", "null")!!)
+    var playlist: JSONObject? = prefs.getString("playlistId", null)?.let { id ->
+        when {
+            id == "keyflow-originals" -> demo()
+            !id.matches(Regex("[A-Za-z0-9_-]{1,80}")) -> null
+            else -> runCatching {
+                JSONObject(File(context.filesDir, "playlists/$id.json").readText())
+            }.getOrNull()
+        }
     }
-        .getOrNull()
         private set
 
     fun save(value: JSONObject) {
         playlist = value
-        prefs.edit().putString("playlist", value.toString()).apply()
+        prefs.edit().putString("playlistId", value.getString("id")).apply()
     }
 
     fun demo() =
@@ -69,6 +74,19 @@ class LibraryStore(private val context: Context) {
 
     fun offline(song: JSONObject) =
         song.optBoolean("demo") || (songFile(song, "mp3").isFile && songFile(song, "json").isFile)
+
+    fun preloadCount(collection: JSONObject): Int = prefs.getInt(
+        "preload.${collection.optString("id")}", collection.optInt("preloadCount", 3),
+    ).coerceIn(0, 20)
+
+    /** A fixed window from the first uncleared level, including songs already cached. */
+    fun upcoming(collection: JSONObject): List<JSONObject> {
+        val songs = collection.getJSONArray("songs")
+        val from = (0 until songs.length()).firstOrNull { !completed(songs.getJSONObject(it)) }
+            ?: return emptyList()
+        return (from until minOf(from + preloadCount(collection), songs.length()))
+            .map { songs.getJSONObject(it) }
+    }
 
     // ---- Player progression, shared across playlists.
 

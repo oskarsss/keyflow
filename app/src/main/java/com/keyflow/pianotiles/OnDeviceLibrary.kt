@@ -6,16 +6,36 @@ import com.keyflow.pianotiles.downloader.YTDLRequest
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
+import java.util.UUID
+import kotlin.random.Random
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** App-private playlists, audio, covers and charts; no companion connection. */
-class OnDeviceLibrary private constructor(private val context: Context) {
+class OnDeviceLibrary internal constructor(private val context: Context) {
     val runtime by lazy { NativeRuntime(context) }
     private val store = LibraryStore(context)
     private val indexes = File(context.filesDir, "playlists").apply { mkdirs() }
     private val lock = Any()
+    private val cacheLock = Any()
+    @Volatile internal var cacheGeneration = 0L
+        private set
+
+    init {
+        // A process restart cannot have any active downloads. Repair persisted transient states.
+        for (playlist in savedPlaylists()) {
+            val songs = playlist.getJSONArray("songs")
+            for (i in 0 until songs.length()) {
+                val song = songs.getJSONObject(i)
+                if (store.offline(song)) song.put("status", "ready")
+                else if (song.optString("status") in listOf("ready", "caching")) {
+                    song.put("status", "pending")
+                    song.remove("progress")
+                }
+            }
+            save(playlist)
+        }
+    }
 
     fun importPlaylist(value: String, id: String, progress: (String) -> Unit): JSONObject {
         val url = PlaylistUrl.normalize(value)
@@ -33,14 +53,17 @@ class OnDeviceLibrary private constructor(private val context: Context) {
                     .execute(request, id, 180) { if (it.startsWith("Preparing")) progress(it) }
                     .out,
             )
-        val playlistId =
-            MessageDigest.getInstance("SHA-256")
-                .digest(url.toByteArray())
-                .joinToString("") { "%02x".format(it) }
-                .take(20)
-        val old = snapshot(playlistId)
+        return createPlaylist(raw)
+    }
+
+    /** Import a one-time song list into a new collection; the source is never its identity. */
+    internal fun createPlaylist(raw: JSONObject, random: Random = Random.Default): JSONObject {
+        val cached = savedPlaylists().flatMap { playlist ->
+            val songs = playlist.getJSONArray("songs")
+            (0 until songs.length()).map { songs.getJSONObject(it) }
+        }.sortedBy { it.has("chartMethod") }.associateBy { it.optString("id") }
         val entries = raw.optJSONArray("entries") ?: JSONArray()
-        val songs = JSONArray()
+        val songs = mutableListOf<JSONObject>()
         val seen = mutableSetOf<String>()
         for (i in 0 until entries.length()) {
             val entry = entries.optJSONObject(i) ?: continue
@@ -67,12 +90,7 @@ class OnDeviceLibrary private constructor(private val context: Context) {
                     thumbs.optJSONObject(thumbs.length() - 1)?.optString("url", ""),
                 )
             if (store.offline(song)) {
-                val previous =
-                    old?.optJSONArray("songs")?.let { values ->
-                        (0 until values.length())
-                            .map { values.getJSONObject(it) }
-                            .firstOrNull { it.optString("id") == sid }
-                    }
+                val previous = cached[sid]
                 if (previous != null)
                     for (key in listOf("title", "artist", "duration", "chartMethod")) if (
                         previous.has(key)
@@ -80,18 +98,16 @@ class OnDeviceLibrary private constructor(private val context: Context) {
                         song.put(key, previous.get(key))
                 song.put("status", "ready")
             }
-            songs.put(song)
+            songs.add(song)
         }
-        check(songs.length() > 0) {
+        check(songs.isNotEmpty()) {
             "No playable songs found. Check your playlist link or update the downloader in Play settings."
         }
-        val count = store.prefs.getInt("preload.$playlistId", old?.optInt("preloadCount", 3) ?: 3)
         return JSONObject()
-            .put("id", playlistId)
+            .put("id", UUID.randomUUID().toString())
             .put("title", raw.optString("title", "My playlist"))
-            .put("url", url)
-            .put("songs", songs)
-            .put("preloadCount", count)
+            .put("songs", JSONArray(songs.shuffled(random)))
+            .put("preloadCount", 3)
             .also(::save)
     }
 
@@ -116,31 +132,43 @@ class OnDeviceLibrary private constructor(private val context: Context) {
             .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
     }
 
-    fun bootstrap(playlist: JSONObject) {
-        if (playlist.optString("id") == "keyflow-originals") return
-        if (snapshot(playlist.getString("id")) == null) {
-            val copy = JSONObject(playlist.toString())
-            val songs = copy.getJSONArray("songs")
-            for (i in 0 until songs.length()) {
-                val song = songs.getJSONObject(i)
-                song.put("status", if (store.offline(song)) "ready" else "pending")
-                song.remove("audio")
-                song.remove("chart")
-                song.remove("cover")
-            }
-            save(copy)
-        }
-    }
-
     fun setPreload(id: String, count: Int): JSONObject = synchronized(lock) {
         require(count in 0..20)
         val playlist = requireNotNull(snapshot(id)) { "Import your playlist again." }
         playlist.put("preloadCount", count)
+        store.prefs.edit().putInt("preload.$id", count).apply()
         save(playlist)
         playlist
     }
 
-    fun cacheSong(playlistId: String, songId: String, progress: (String) -> Unit) {
+    fun clearDownloads() = synchronized(cacheLock) {
+        cacheGeneration++
+        File(context.filesDir, "songs").deleteRecursively()
+        File(context.cacheDir, "downloads").deleteRecursively()
+        synchronized(lock) {
+            for (playlist in savedPlaylists()) {
+                val songs = playlist.getJSONArray("songs")
+                for (i in 0 until songs.length()) {
+                    val song = songs.getJSONObject(i)
+                    song.put("status", if (store.offline(song)) "ready" else "pending")
+                    song.remove("progress")
+                    song.remove("error")
+                }
+                save(playlist)
+            }
+        }
+    }
+
+    fun cacheSong(
+        playlistId: String,
+        songId: String,
+        generation: Long = cacheGeneration,
+        progress: (String) -> Unit,
+    ) = synchronized(cacheLock) {
+        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, progress)
+    }
+
+    private fun cacheSongNow(playlistId: String, songId: String, progress: (String) -> Unit) {
         val playlist =
             requireNotNull(snapshot(playlistId)) { "Playlist not found. Import it again." }
         val songs = playlist.getJSONArray("songs")

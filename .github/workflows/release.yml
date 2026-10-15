@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-35' 'build-tools;36.0.0'
+      - uses: actions/cache@v4
+        with:
+          path: artifacts/upstream
+          key: ytdlnis-runtimes-${{ hashFiles('tools/prepare_android_runtimes.py') }}
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Verify
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug --console=plain
+          python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Prepare signing key
+        env:
+          KEYFLOW_KEYSTORE_BASE64: ${{ secrets.KEYFLOW_KEYSTORE_BASE64 }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          key = Path(os.environ["RUNNER_TEMP"]) / "keyflow-release.jks"
+          encoded = os.environ["KEYFLOW_KEYSTORE_BASE64"]
+          if not encoded:
+              raise SystemExit("KEYFLOW_KEYSTORE_BASE64 repository secret is required")
+          key.write_bytes(base64.b64decode(encoded, validate=True))
+          key.chmod(0o600)
+          PY
+      - name: Build signed APK and source archive
+        env:
+          KEYFLOW_KEYSTORE: ${{ runner.temp }}/keyflow-release.jks
+          KEYFLOW_STORE_PASSWORD: ${{ secrets.KEYFLOW_STORE_PASSWORD }}
+          KEYFLOW_KEY_PASSWORD: ${{ secrets.KEYFLOW_KEY_PASSWORD }}
+        run: python3 tools/build_release.py --tag "$RELEASE_TAG"
+      - name: Attach release downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          gh release upload "$RELEASE_TAG" \
+            "artifacts/keyflow-$version.apk" \
+            "artifacts/keyflow-$version-source.tar.gz" \
+            artifacts/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/keyflow-release.jks"

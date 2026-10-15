@@ -239,7 +239,7 @@ class MainActivity : Activity() {
         ui.fill(
             body,
             ui.text(
-                "Paste a YouTube Music playlist link. Each song becomes a level.",
+                "Copy songs from a YouTube Music playlist into your own shuffled level list.",
                 15f,
                 Palette.MUTED,
             ).apply { setLineSpacing(dp(3).toFloat(), 1f) },
@@ -372,19 +372,17 @@ class MainActivity : Activity() {
     }
 
     private fun selectPlaylist(playlist: JSONObject) {
-        store.playlist?.let(library::bootstrap)
         cancelImport()
         operation++
         stopGame()
         attemptedPrefetch.clear()
-        store.save(library.snapshot(playlist.getString("id")) ?: playlist)
+        store.save(playlist)
         showHome()
     }
 
     // ---------------------------------------------------------------- playlists
 
     private fun showPlaylists() {
-        store.playlist?.let(library::bootstrap)
         val body = page(Screen.PLAYLISTS, bar("Playlists") { showHome() })
         val currentId = store.playlist?.optString("id")
         val playlists = library.savedPlaylists() + store.demo()
@@ -453,7 +451,7 @@ class MainActivity : Activity() {
 
     private fun showHome() {
         if (isDestroyed || store.playlist == null) return
-        library.bootstrap(store.playlist!!)
+        library.snapshot(store.playlist!!.getString("id"))?.let(store::save)
         val playlist = store.playlist!!
         val top = ui.row().apply { setPadding(dp(8), 0, dp(8), 0) }
         val switcher = ui.column().apply {
@@ -872,23 +870,14 @@ class MainActivity : Activity() {
         val playlist = store.playlist ?: return
         val id = playlist.optString("id")
         if (id == ORIGINALS) return
-        val count = preloadCount()
-        val songs = store.songs()
-        val from = nextIndex().coerceAtLeast(0)
-        val wanted =
-            (from until minOf(from + count, songs.length()))
-                .map { songs.getJSONObject(it) }
-                .filter { !store.offline(it) && it.optString("id") !in attemptedPrefetch }
+        val wanted = store.upcoming(playlist)
+            .filter { !store.offline(it) && it.optString("id") !in attemptedPrefetch }
         if (wanted.isEmpty()) return
         attemptedPrefetch.addAll(wanted.map { it.optString("id") })
-        for (song in wanted) DownloadService.start(this, id, song.optString("id"))
+        DownloadService.start(this, id)
     }
 
-    private fun preloadCount() =
-        store.prefs.getInt(
-            "preload.${store.playlist?.optString("id")}",
-            store.playlist?.optInt("preloadCount", 3) ?: 3,
-        )
+    private fun preloadCount() = store.playlist?.let(store::preloadCount) ?: 3
 
     // ---------------------------------------------------------------- arcade
 
@@ -936,7 +925,6 @@ class MainActivity : Activity() {
 
     /** Every song from every playlist, plus the built-in songs. */
     private fun arcadePool(): List<Arcade.Entry> {
-        store.playlist?.let(library::bootstrap)
         val entries = ArrayList<Arcade.Entry>()
         for (playlist in library.savedPlaylists()) {
             val songs = playlist.getJSONArray("songs")
@@ -1197,7 +1185,7 @@ class MainActivity : Activity() {
         val speeds = floatArrayOf(.8f, 1f, 1.15f)
         val speed = speeds.indexOfFirst { kotlin.math.abs(it - prefs.getFloat("speed", 1f)) < .01 }
         settingStack(gameplay, "Song speed", "Slower songs are easier") {
-            ui.segmented(listOf("0.8×", "1×", "1.15×"), speed.coerceAtLeast(1)) {
+            ui.segmented(listOf("0.8×", "1×", "1.15×"), speed.takeIf { it >= 0 } ?: 1) {
                 prefs.edit().putFloat("speed", speeds[it]).apply()
             }
         }
@@ -1251,7 +1239,7 @@ class MainActivity : Activity() {
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Clear") { _, _ ->
                     io.execute {
-                        java.io.File(filesDir, "songs").deleteRecursively()
+                        library.clearDownloads()
                         handler.post {
                             attemptedPrefetch.clear()
                             Toast.makeText(this, "Downloads cleared", Toast.LENGTH_SHORT).show()
@@ -1482,7 +1470,7 @@ class MainActivity : Activity() {
                     val time = note.getDouble("time")
                     val lane = note.getInt("lane")
                     check(time.isFinite() && time >= 0 && time >= previous && lane in 0..3) {
-                        "Invalid song chart. Reimport the playlist."
+                        "Invalid song chart. Clear downloaded songs in Settings and try again."
                     }
                     val kind = note.optString("kind", "tap")
                     val duration = note.optDouble("duration", 0.0)
@@ -1494,7 +1482,7 @@ class MainActivity : Activity() {
                             endLane in 0..3 &&
                             (kind == "tap" || duration > 0),
                     ) {
-                        "Invalid gesture chart. Reimport the playlist."
+                        "Invalid gesture chart. Clear downloaded songs in Settings and try again."
                     }
                     list.add(GameSession.Note(time, lane, kind, duration, endLane))
                     previous = time

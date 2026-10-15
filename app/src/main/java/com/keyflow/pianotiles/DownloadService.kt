@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** A visible on-device queue survives leaving the game or locking the phone. */
 class DownloadService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
-    private val queued = mutableSetOf<String>()
+    private val queued = mutableMapOf<String, Boolean>()
     private val pending = AtomicInteger()
     private lateinit var library: OnDeviceLibrary
 
@@ -37,24 +37,38 @@ class DownloadService : Service() {
         }
         val selected = intent.getStringExtra("songId")
         val songs = playlist.getJSONArray("songs")
-        val count = playlist.optInt("preloadCount", 3).coerceIn(0, 20)
+        val store = LibraryStore(this)
         val ids =
             if (selected != null) listOf(selected)
-            else
-                (0 until minOf(count, songs.length())).map {
-                    songs.getJSONObject(it).getString("id")
-                }
-        val store = LibraryStore(this)
+            else store.upcoming(playlist).map { it.getString("id") }
         for (songId in ids) {
             val song =
                 (0 until songs.length())
                     .map { songs.getJSONObject(it) }
                     .firstOrNull { it.getString("id") == songId } ?: continue
-            if (store.offline(song) || !synchronized(queued) { queued.add("$id:$songId") }) continue
+            if (store.offline(song)) continue
+            val generation = library.cacheGeneration
+            val key = "$generation:$id:$songId"
+            val added = synchronized(queued) {
+                if (queued.containsKey(key)) {
+                    // A tap must promote an automatic request even if the preload limit changed.
+                    if (selected != null) queued[key] = true
+                    false
+                } else {
+                    queued[key] = selected != null
+                    true
+                }
+            }
+            if (!added) continue
             pending.incrementAndGet()
             executor.execute {
-                runCatching { library.cacheSong(id, songId, ::updateNotification) }
-                synchronized(queued) { queued.remove("$id:$songId") }
+                runCatching {
+                    val latest = library.snapshot(id)
+                    val requested = synchronized(queued) { queued[key] == true }
+                    if (requested || latest != null && store.upcoming(latest).any { it.getString("id") == songId })
+                        library.cacheSong(id, songId, generation, ::updateNotification)
+                }
+                synchronized(queued) { queued.remove(key) }
                 if (pending.decrementAndGet() == 0) android.os.Handler(mainLooper).post {
                     if (pending.get() == 0) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
                 }

@@ -55,15 +55,10 @@ class NativeRuntime(private val context: Context) {
         check(python.isFile && ffmpeg.isFile && quickJs.isFile) {
             "The bundled download engine is incomplete."
         }
-        val bundleHash = "f40b6a9e4c5786360953911cab5d2f87507626b8fb7bfee3f8f1c2e5cf341fae"
-        val bundleStamp = File(root, ".extractor-bundle")
-        val previousBundle = bundleStamp.takeIf { it.isFile }?.readText()
-        if (!extractor.isFile || previousBundle == null ||
-            (previousBundle != bundleHash && hex(MessageDigest.getInstance("SHA-256").digest(extractor.readBytes())) == previousBundle))
+        if (!extractor.isFile)
             context.assets.open("downloader/yt-dlp").use { input ->
                 extractor.outputStream().use { input.copyTo(it) }
             }
-        bundleStamp.writeText(bundleHash)
         initialized = true
     }
 

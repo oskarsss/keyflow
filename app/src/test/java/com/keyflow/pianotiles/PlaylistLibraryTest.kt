@@ -35,22 +35,22 @@ class PlaylistLibraryTest {
     }
 
     @Test
-    fun previousPlaylistAndLegacyProgressSurviveAnotherImportSwitchingAndRestart() {
+    fun savedPlaylistsSupportSwitchingRestartAndLockedTitleMasking() {
         val prefs = context.getSharedPreferences("keyflow", 0)
         prefs.edit().clear().commit()
         val original = LibraryStore(context).demo()
         val first = JSONObject(original.toString()).put("id", "morning-mix")
             .put("title", "Morning mix").put("preloadCount", 0)
-        // Seed the exact preference format written by 1.0/1.1, before the playlist picker existed.
-        prefs.edit().putString("playlist", first.toString())
-            .putBoolean("song.first-light.completed", true)
+        val library = OnDeviceLibrary.get(context)
+        library.save(first)
+        LibraryStore(context).save(first)
+        prefs.edit().putBoolean("song.first-light.completed", true)
             .putInt("song.first-light.score", 9876)
             .putInt("song.first-light.stars", 3).commit()
         Robolectric.buildActivity(MainActivity::class.java).setup().use { controller ->
             assertTrue(LibraryStore(context).unlocked(1))
             controller.pause().stop()
         }
-        val library = OnDeviceLibrary.get(context)
         val second = JSONObject().put("id", "evening-mix").put("title", "Evening mix")
             .put("preloadCount", 0).put("songs", JSONArray().put(
                 JSONObject().put("id", "another-song").put("title", "Another song")

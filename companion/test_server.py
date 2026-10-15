@@ -21,7 +21,7 @@ class PlaylistTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 playlist_url(value)
 
-    def test_metadata_and_prefetch_preserve_playlist_order(self):
+    def test_import_shuffles_once_and_prefetch_uses_local_order(self):
         with tempfile.TemporaryDirectory() as temp:
             library=Library(Path(temp),"test",3)
             entries=[{"id": f"songid{i:05d}", "title": f"Song {i}", "uploader": "Artist"} for i in range(5)]
@@ -29,13 +29,61 @@ class PlaylistTests(unittest.TestCase):
             cached=[]
             def cache(playlist,song):
                 cached.append(song["id"]); song["status"]="ready"
+                directory = Path(temp) / song["id"]
+                directory.mkdir(exist_ok=True)
+                (directory / "audio.mp3").write_bytes(b"audio")
+                (directory / "chart.json").write_text("{}")
             job={}
-            with patch("server.subprocess.run",return_value=result), patch.object(library,"cache_song",side_effect=cache):
+            with patch("server.subprocess.run",return_value=result), patch("server.random.shuffle", side_effect=lambda songs: songs.reverse()), patch.object(library,"cache_song",side_effect=cache):
                 library.import_playlist("https://music.youtube.com/playlist?list=PLA2wtd_DK6uw",job)
             self.assertEqual(job["status"],"complete")
-            self.assertEqual(cached,[e["id"] for e in entries[:3]])
-            self.assertEqual([s["title"] for s in job["playlist"]["songs"]],[f"Song {i}" for i in range(5)])
+            self.assertEqual(cached,[e["id"] for e in entries[::-1][:3]])
+            self.assertEqual([s["title"] for s in job["playlist"]["songs"]],[f"Song {i}" for i in reversed(range(5))])
+            self.assertNotIn("url", job["playlist"])
+            original = library.snapshot(job["playlist"])
+            library.request_prefetch(original["id"], 1)
+            library.executor.submit(lambda: None).result(timeout=5)
+            second = {}
+            with patch("server.subprocess.run", return_value=result):
+                library.import_playlist("https://music.youtube.com/playlist?list=PLA2wtd_DK6uw", second, 0)
+            self.assertNotEqual(original["id"], second["playlist"]["id"])
+            self.assertEqual(len(library.playlists), 2)
+            self.assertEqual(library.playlists[original["id"]]["songs"], original["songs"])
+            self.assertEqual(second["playlist"]["preloadCount"], 0)
             library.executor.shutdown()
+            restored = Library(Path(temp), "test", 3)
+            self.assertEqual(restored.playlists[original["id"]]["songs"], original["songs"])
+            restored.executor.shutdown()
+
+    def test_independent_import_reuses_complete_shared_cache_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            sid = "songid00000"
+            (directory / sid).mkdir()
+            (directory / sid / "audio.mp3").write_bytes(b"audio")
+            (directory / sid / "chart.json").write_text("{}")
+            original = {"id": "saved-mix", "title": "Saved mix",
+                        "songs": [{"id": sid, "title": "Cached title", "artist": "Cached artist", "status": "ready"},
+                                  {"id": "songid00001", "status": "caching"},
+                                  {"id": "songid00002", "status": "ready"}]}
+            (directory / "playlist-saved-mix.json").write_text(json.dumps(original))
+            library = Library(directory, "test", 0)
+            try:
+                self.assertEqual([s["id"] for s in library.playlists["saved-mix"]["songs"]],
+                                 [s["id"] for s in original["songs"]])
+                self.assertEqual([s["status"] for s in library.playlists["saved-mix"]["songs"]],
+                                 ["ready", "pending", "pending"])
+                result = type("Result", (), {"returncode": 0, "stderr": "", "stdout": json.dumps(
+                    {"title": "New import", "entries": [{"id": sid, "title": "Source title"}]})})()
+                job = {}
+                with patch("server.subprocess.run", return_value=result):
+                    library.import_playlist("https://music.youtube.com/playlist?list=PLA2wtd_DK6uw", job)
+                self.assertEqual(job["status"], "complete")
+                self.assertNotEqual(job["playlist"]["id"], "saved-mix")
+                self.assertEqual(job["playlist"]["songs"][0]["title"], "Cached title")
+                self.assertEqual(job["playlist"]["songs"][0]["status"], "ready")
+            finally:
+                library.executor.shutdown()
 
     def test_real_audio_chart_is_deterministic_and_playable(self):
         audio=Path(__file__).resolve().parents[1]/"app/src/main/assets/demo/first-light.wav"

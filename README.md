@@ -4,7 +4,7 @@ A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist
 
 ## Play
 
-- Paste a public or unlisted playlist on first launch, or share a link to Keyflow from YouTube Music. Switch or add playlists from the playlist name at the top of the home screen. Scores and unlocks are kept per song.
+- Paste a public or unlisted playlist on first launch, or share a link to Keyflow from YouTube Music. Switch or add playlists from the playlist name at the top of the home screen. Each import copies up to 200 unique songs into a new local playlist and shuffles the level order once. That order stays fixed across restarts. Imports keep no link to the source playlist; importing the same link again creates a separate collection. Downloads, scores, and unlocks are reused per song.
 - **Journey:** each song is a level on a winding map. Clear a level to unlock the next. Locked covers are blurred and their titles partially masked (for example `Ru* Ra****`).
 - **Gameplay:** tiles race down a perspective highway toward the strike line. Tap tiles, **hold** green rails, **follow** blue slides, tap **chords** with two fingers, grab **gold** tiles for bonus points and a life back, and never touch **bombs**. New tile kinds appear gradually across levels and are introduced the first time you meet them.
 - You have eight lives. Every miss costs one, and every 25-note streak earns one back. The combo raises a score multiplier up to ×4 (fever). Hit 75% of the notes to clear a level. Grades run from S to D, and stars come from accuracy.
@@ -22,7 +22,7 @@ Public/unlisted playlists are supported up to 200 unique tracks, with a 20-minut
 
 Download the signed APK from this private repository's [releases](https://github.com/oskarsss/PianoTiles/releases). The APK supports **ARM64 phones and x86-64 emulators**, Android 8.0 (API 26) or newer. Bundled Python, FFmpeg, and QuickJS make it approximately 100 MB; the first import unpacks the runtime into app-private storage.
 
-Version 1.2.0 uses the same signing key as earlier releases, so it can be installed over the existing app while retaining progress. The playlist picker also exposes collections imported before this update. Existing downloaded audio and charts are reused, and older playlist indexes migrate locally. The release signing key/password remain in the ignored `artifacts/` directory; retain them for compatible future updates.
+Version 1.3.0 is a development release with no backward data compatibility. Uninstall the previous app or clear its storage before installing, then import your playlists again. Playlists, downloads, scores, progress, and settings may be wiped after any update during development. The release signing key/password remain in the ignored `artifacts/` directory.
 
 ## Build
 
@@ -35,7 +35,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 The pre-build task runs `tools/prepare_android_runtimes.py`. It downloads the two official YTDLnis 1.9.0 APKs, verifies their pinned SHA-256 hashes, and extracts only Python/FFmpeg/QuickJS runtime libraries. Native bundles are ignored by Git and cached locally. The official yt-dlp nightly 2026.10.10.233141 executable is bundled as an asset. Neither yt-dlp nor FFmpeg needs to be installed on the build computer.
 
-For release signing, set `KEYFLOW_KEYSTORE`, `KEYFLOW_STORE_PASSWORD`, and `KEYFLOW_KEY_PASSWORD`, then run `./gradlew :app:assembleRelease`. Without these variables, release builds are unsigned. `tools/build_release.py` uses the locally retained signing files and writes a versioned APK and checksum.
+For release signing, set `KEYFLOW_KEYSTORE`, `KEYFLOW_STORE_PASSWORD`, and `KEYFLOW_KEY_PASSWORD`, then run `./gradlew :app:assembleRelease`. Without these variables, release builds are unsigned. `python3 tools/build_release.py` builds a signed APK, the committed source archive, and SHA-256 checksums. It uses the environment variables above in CI or the locally retained signing files on a developer machine, and requires a clean, committed working tree.
+
+Publishing a GitHub release automatically runs `.github/workflows/release.yml`. The job checks out the release tag, runs JVM tests and lint, builds the signed APK, and attaches the APK, source archive, and `SHA256SUMS` to the release downloads. The tag must match `versionName` (for example `v1.3.0`). Configure repository Actions secrets `KEYFLOW_KEYSTORE_BASE64` (the base64-encoded keystore), `KEYFLOW_STORE_PASSWORD`, and `KEYFLOW_KEY_PASSWORD`. The workflow can also be run manually with an existing release tag to rebuild its downloads.
 
 ## Verify
 
@@ -54,7 +56,7 @@ adb shell am instrument -w -r \
   com.keyflow.pianotiles.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Install the debug APK and `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` first. Live tests require internet access. JVM tests cover scoring, timing, lives and multipliers, tile variety, arcade segments, progression, URL validation, literal downloader arguments, deterministic streaming audio analysis, and non-overlapping gestures. Robolectric regression tests exercise legacy progress, adding a second collection, selecting earlier playlists, activity restarts, and locked-title/accessibility masking without an emulator.
+Install the debug APK and `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` first. Live tests require internet access. JVM tests cover scoring, timing, lives and multipliers, tile variety, arcade segments, progression, URL validation, literal downloader arguments, deterministic streaming audio analysis, and non-overlapping gestures. Robolectric regression tests exercise independent shuffled imports, stable ordering after restarts, shared download reuse, recovery of interrupted downloads, progress-based preload windows, cache clearing, selection by playlist ID, playlist switching, and locked-title/accessibility masking without an emulator.
 
 ## Source and credits
 
@@ -63,6 +65,6 @@ The app is GPL-3.0; see `LICENSE` and `THIRD_PARTY_NOTICES.md` for reused YTDLni
 - `app/` — native interface, Canvas game, audio judgement, local playlists/cache, foreground download queue, and Android runtime integration.
 - `tools/prepare_android_runtimes.py` — checksum-pinned official runtime preparation.
 - `tools/generate_demo.py` — reproducible original demo audio/charts.
-- `companion/` — retained desktop prototype and reference onset generator for development; **the Android app does not call it**. Its eight tests can be run with `python3 -m unittest discover -s companion -v` when system FFmpeg is installed.
+- `companion/` — retained desktop prototype and reference onset generator for development; **the Android app does not call it**. Its tests can be run with `python3 -m unittest discover -s companion -v` when system FFmpeg is installed.
 
 The project is independent of commercial Piano Tiles games. No commercial game's source, branding, or audio is included.
