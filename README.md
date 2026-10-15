@@ -5,7 +5,8 @@ A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist
 ## Play
 
 - Paste a public or unlisted playlist on first launch, or share a link to Keyflow from YouTube Music.
-- Every level previews its source song artwork. Locked covers are blurred and dimmed; covers become clear when unlocked. Album artwork comes from the source metadata, with a video thumbnail as the fallback.
+- Use **Playlists** at the top of your journey to return to any saved playlist, see each collection’s progress, or add another. Importing another playlist keeps earlier scores and unlocks available.
+- Every level previews its source song artwork. Locked covers are blurred and dimmed, and locked titles are partially masked (for example, `Ru* Ra****`). Titles and covers become clear when unlocked. Album artwork comes from the source metadata, with a video thumbnail as the fallback.
 - Tap each of the four lanes when a tile reaches the glowing line. **Hold** sustained rails until their tails finish, and **slide** your finger along diagonal rails between lanes. Drag across ordinary tiles for flowing phrases. Multiple fingers, touch trails, hit particles, and haptics are supported.
 - Hit at least 75% of notes and finish with fewer than eight misses to pass. Complete songs in playlist order to unlock the next level.
 - Earn up to three stars from timing accuracy and keep your best scores. Progress survives restarts and playlist changes.
@@ -23,7 +24,7 @@ Public/unlisted playlists are supported up to 200 unique tracks, with a 20-minut
 
 Download the signed APK from this private repository's [releases](https://github.com/oskarsss/PianoTiles/releases). The APK supports **ARM64 phones and x86-64 emulators**, Android 8.0 (API 26) or newer. Bundled Python, FFmpeg, and QuickJS make it approximately 100 MB; the first import unpacks the runtime into app-private storage.
 
-Version 1.1 uses the same signing key as 1.0, so it can be installed over 1.0 without losing progress. Existing downloaded audio and charts are reused, and older playlist indexes migrate locally. The release signing key/password remain in the ignored `artifacts/` directory; retain them for compatible future updates.
+Version 1.1.1 uses the same signing key as earlier releases, so it can be installed over the existing app while retaining progress. The playlist picker also exposes collections imported before this update. Existing downloaded audio and charts are reused, and older playlist indexes migrate locally. The release signing key/password remain in the ignored `artifacts/` directory; retain them for compatible future updates.
 
 ## Build
 
@@ -55,7 +56,7 @@ adb shell am instrument -w -r \
   com.keyflow.pianotiles.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Install the debug APK and `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` first. Live tests require internet access. JVM tests cover scoring, timing, progression, URL validation, literal downloader arguments, deterministic streaming audio analysis, and non-overlapping gestures.
+Install the debug APK and `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` first. Live tests require internet access. JVM tests cover scoring, timing, progression, URL validation, literal downloader arguments, deterministic streaming audio analysis, and non-overlapping gestures. Robolectric regression tests exercise legacy progress, adding a second collection, selecting earlier playlists, activity restarts, and locked-title/accessibility masking without an emulator.
 
 ## Source and credits
 

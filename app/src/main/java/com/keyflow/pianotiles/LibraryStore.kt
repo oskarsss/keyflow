@@ -43,7 +43,10 @@ class LibraryStore(private val context: Context) {
             .apply()
     }
 
-    fun completedCount() = (0 until songs().length()).count { completed(songs().getJSONObject(it)) }
+    fun completedCount(collection: JSONObject? = playlist): Int {
+        val songs = collection?.optJSONArray("songs") ?: return 0
+        return (0 until songs.length()).count { completed(songs.getJSONObject(it)) }
+    }
 
     fun songFile(song: JSONObject, extension: String): File {
         val directory = File(context.filesDir, "songs").apply { mkdirs() }

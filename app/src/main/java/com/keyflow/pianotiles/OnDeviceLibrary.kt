@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 /** App-private playlists, audio, covers and charts; no companion connection. */
 class OnDeviceLibrary private constructor(private val context: Context) {
-    val runtime = NativeRuntime(context)
+    val runtime by lazy { NativeRuntime(context) }
     private val store = LibraryStore(context)
     private val indexes = File(context.filesDir, "playlists").apply { mkdirs() }
     private val lock = Any()
@@ -108,6 +108,14 @@ class OnDeviceLibrary private constructor(private val context: Context) {
             runCatching { JSONObject(index(id).readText()) }.getOrNull()
         }
 
+    fun savedPlaylists(): List<JSONObject> = synchronized(lock) {
+        indexes.listFiles().orEmpty()
+            .filter { it.name.matches(Regex("[A-Za-z0-9_-]{1,80}\\.json")) }
+            .mapNotNull { snapshot(it.nameWithoutExtension) }
+            .filter { it.optString("id").isNotBlank() && it.optJSONArray("songs") != null }
+            .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
+    }
+
     fun bootstrap(playlist: JSONObject) {
         if (playlist.optString("id") == "keyflow-originals") return
         if (snapshot(playlist.getString("id")) == null) {
@@ -140,6 +148,11 @@ class OnDeviceLibrary private constructor(private val context: Context) {
             (0 until songs.length())
                 .map { songs.getJSONObject(it) }
                 .first { it.getString("id") == songId }
+        val position = (0 until songs.length()).first {
+            songs.getJSONObject(it).getString("id") == songId
+        }
+        val title = SongTitle.display(song.optString("title"),
+            (0 until position).all { store.completed(songs.getJSONObject(it)) })
         if (store.offline(song)) {
             updateSong(playlistId, songId) { it.put("status", "ready") }
             return
@@ -188,12 +201,12 @@ class OnDeviceLibrary private constructor(private val context: Context) {
                         else -> "Downloading audio on this phone…"
                     }
                     updateSong(playlistId, songId) { it.put("progress", message) }
-                    progress("${song.optString("title")}: $message")
+                    progress("$title: $message")
                 }
             }
             val audio = File(folder, "source.mp3")
             check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
-            progress("Finding the rhythm in ${song.optString("title")}…")
+            progress("Finding the rhythm in $title…")
             updateSong(playlistId, songId) {
                 it.put("progress", "Building tap, hold and slide patterns…")
             }

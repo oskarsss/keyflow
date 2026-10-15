@@ -237,9 +237,7 @@ class MainActivity : Activity() {
             body,
             button("Try the original piano collection", false) {
                 runCatching {
-                        operation++
-                        store.save(store.demo())
-                        showLibrary()
+                        selectPlaylist(store.demo())
                     }
                     .onFailure(::showError)
             },
@@ -371,8 +369,7 @@ class MainActivity : Activity() {
                     handler.post {
                         if (operation == run && !isDestroyed) {
                             activeImport = null
-                            store.save(playlist)
-                            showLibrary()
+                            selectPlaylist(playlist)
                         }
                     }
                 }
@@ -388,11 +385,42 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun selectPlaylist(playlist: JSONObject) {
+        store.playlist?.let(library::bootstrap)
+        cancelImport()
+        operation++
+        stopGame()
+        attemptedPrefetch.clear()
+        store.save(library.snapshot(playlist.getString("id")) ?: playlist)
+        showLibrary()
+    }
+
+    private fun showPlaylistPicker() {
+        store.playlist?.let(library::bootstrap)
+        val playlists = library.savedPlaylists() + store.demo()
+        val current = playlists.indexOfFirst { it.optString("id") == store.playlist?.optString("id") }
+        val labels = playlists.map { playlist ->
+            val total = playlist.getJSONArray("songs").length()
+            val completed = store.completedCount(playlist)
+            val percent = if (total == 0) 0 else completed * 100 / total
+            "${playlist.optString("title")}\n$completed of $total completed · $percent%"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Your playlists")
+            .setSingleChoiceItems(labels, current) { dialog, index ->
+                dialog.dismiss()
+                selectPlaylist(playlists[index])
+            }
+            .setPositiveButton("Add playlist") { _, _ -> showOnboarding() }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun showLibrary() {
         if (isDestroyed || store.playlist == null) return
         library.bootstrap(store.playlist!!)
         page("library")
-        toolbar("＋ Playlist", ::showOnboarding)
+        toolbar("Playlists", ::showPlaylistPicker)
         add(body, button("Play & download settings", false, ::showSettings))
         space(body, 18)
         val heading = row()
@@ -506,7 +534,7 @@ class MainActivity : Activity() {
                 clipToOutline = true
                 contentDescription =
                     if (unlocked) "${song.optString("title")} album cover"
-                    else "Blurred locked album cover for ${song.optString("title")}"
+                    else "Blurred locked album cover for level ${index + 1}"
             }
         cover.addView(
             TileArtwork(this, index).apply { concealPreview(this, !unlocked) },
@@ -554,7 +582,7 @@ class MainActivity : Activity() {
         space(info, 4)
         add(
             info,
-            text(song.optString("title"), 16, TEXT, true).apply {
+            text(SongTitle.display(song.optString("title"), unlocked), 16, TEXT, true).apply {
                 maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
             },

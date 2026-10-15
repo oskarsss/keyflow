@@ -11,3 +11,4 @@ artifacts/
 app/src/main/jniLibs/
 *.jks
 *.keystore
+.kotlin/
