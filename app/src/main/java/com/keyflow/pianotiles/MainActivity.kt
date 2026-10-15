@@ -739,8 +739,11 @@ class MainActivity : Activity() {
             val playlist = library.snapshot(id)
             handler.post {
                 polling = false
-                if (page != "library" || isDestroyed || store.playlist?.optString("id") != id)
+                if (page != "library" || isDestroyed) return@post
+                if (store.playlist?.optString("id") != id) {
+                    startPolling()
                     return@post
+                }
                 if (playlist != null && playlist.toString() != store.playlist.toString()) {
                     val y = scroll.scrollY
                     store.save(playlist)
