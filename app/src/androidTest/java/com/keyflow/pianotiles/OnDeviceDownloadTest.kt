@@ -26,8 +26,8 @@ class OnDeviceDownloadTest {
         assertTrue(playlist.getJSONArray("songs").length() > 0)
         LibraryStore(context).save(playlist)
         val first = playlist.getJSONArray("songs").getJSONObject(0)
-        library.cacheSong(playlist.getString("id"), first.getString("id")) {
-            android.util.Log.i("NativeDownloadTest", it.take(180))
+        library.cacheSong(playlist.getString("id"), first.getString("id")) { message, _ ->
+            android.util.Log.i("NativeDownloadTest", message.take(180))
         }
         val store = LibraryStore(context)
         assertTrue(store.offline(first))

@@ -295,6 +295,10 @@ class GameSession(
     val multiplier
         get() = minOf(1 + combo / 10, 4)
 
+    /** Signed tap timing of every hit in milliseconds; positive means late. */
+    fun timingErrorsMs(): List<Double> =
+        notes.filter { it.judgement == 1 || it.judgement == 2 }.map { it.timingErrorMs }
+
     fun accuracy() = if (scored == 0) 0.0 else (perfect + (hits - perfect) * .7) / scored
 
     fun passed() = scored > 0 && !failed() && hits >= ceil(scored * .75)

@@ -86,7 +86,7 @@ class LibraryStore(private val context: Context) {
     fun lastPlayed(song: JSONObject) = prefs.getLong(key(song) + ".lastPlayed", 0L)
 
     fun preloadCount(collection: JSONObject): Int = prefs.getInt(
-        "preload.${collection.optString("id")}", collection.optInt("preloadCount", 3),
+        "preload.${collection.optString("id")}", collection.optInt("preloadCount", DEFAULT_PRELOAD),
     ).coerceIn(0, 20)
 
     /** A fixed window from the first uncleared level, including songs already cached. */
@@ -131,6 +131,9 @@ class LibraryStore(private val context: Context) {
 
     companion object {
         const val CHART_VERSION = 6
+
+        /** Levels kept prepared ahead of the player's progress. */
+        const val DEFAULT_PRELOAD = 5
 
         /** Level n starts at 150·(n−1)² XP. */
         fun level(xp: Int) = 1 + kotlin.math.sqrt(xp / 150.0).toInt()

@@ -59,17 +59,17 @@ class RhythmAnalysisTest {
                 val song = songs.getJSONObject(index)
                 source.copyTo(store.songFile(song, "mp3"), overwrite = true)
                 val started = android.os.SystemClock.elapsedRealtime()
-                library.cacheSong(id, song.getString("id")) {}
+                library.cacheSong(id, song.getString("id")) { _, _ -> }
                 assertTrue(store.offline(song))
                 val chart = store.chart(song)
                 assertEquals(ManiaChartModel.METHOD, chart.getString("method"))
                 assertTrue("Journey excerpt must be prepared before play", chart.has("highlight"))
                 val savedSong = library.snapshot(id)!!.getJSONArray("songs").getJSONObject(index)
                 assertEquals("ready", savedSong.getString("status"))
-                assertFalse(savedSong.has("chartProgress"))
+                assertFalse(savedSong.has("prepared"))
                 val modified = store.chartFile(song).lastModified()
                 var preparationMessages = 0
-                library.cacheSong(id, song.getString("id")) { preparationMessages++ }
+                library.cacheSong(id, song.getString("id")) { _, _ -> preparationMessages++ }
                 assertEquals("Prepared songs must reuse their chart", modified, store.chartFile(song).lastModified())
                 assertEquals("No analysis should restart on a cache hit", 0, preparationMessages)
                 val notes = chart.getJSONArray("notes")

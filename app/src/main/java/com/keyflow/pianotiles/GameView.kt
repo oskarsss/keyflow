@@ -18,6 +18,14 @@ import kotlin.math.sin
 /** Audio position, so rendering and judgement share one clock. */
 interface GameClock {
     val positionMs: Int
+
+    /** Song position for rendering and judgement, finer than [positionMs] where the player allows. */
+    val seconds: Double
+        get() = positionMs / 1000.0
+
+    /** Song position when an input event happened at [uptimeMs] ([SystemClock.uptimeMillis]). */
+    fun secondsAt(uptimeMs: Long): Double = seconds
+
     val durationMs: Int
     val isPlaying: Boolean
 
@@ -44,6 +52,18 @@ class MediaClock(val player: MediaPlayer) : GameClock {
     override val positionMs
         get() = player.currentPosition
 
+    private val steady = SteadyPosition()
+
+    override val seconds: Double
+        get() = steady.update(player.currentPosition / 1000.0, player.isPlaying, System.nanoTime())
+
+    override fun secondsAt(uptimeMs: Long): Double {
+        val position = seconds
+        if (!steady.running) return position
+        val age = (SystemClock.uptimeMillis() - uptimeMs).coerceIn(0L, MAX_INPUT_AGE_MS)
+        return position - age / 1000.0 * steady.rate
+    }
+
     override val durationMs
         get() = player.duration
 
@@ -51,8 +71,13 @@ class MediaClock(val player: MediaPlayer) : GameClock {
         get() = player.isPlaying
 
     override fun start(speed: Float) {
+        steady.rate = speed.toDouble()
         player.playbackParams = PlaybackParams().setSpeed(speed).setPitch(1f)
         player.start()
+    }
+
+    private companion object {
+        const val MAX_INPUT_AGE_MS = 100L
     }
 
     override fun pause() {
@@ -60,6 +85,49 @@ class MediaClock(val player: MediaPlayer) : GameClock {
     }
 
     override fun volume(level: Float) = player.setVolume(level, level)
+}
+
+/**
+ * MediaPlayer reports its position in coarse, uneven steps. This follows it with a steady clock
+ * that runs at the playback speed and only eases toward the reported position.
+ */
+class SteadyPosition {
+    var rate = 1.0
+    private var smoothed = 0.0
+    private var smoothedAt = 0L
+    private var held = Double.NaN
+
+    /** True once the reported position moves, so extrapolation follows audible output. */
+    val running
+        get() = smoothedAt != 0L && held.isNaN()
+
+    fun update(reported: Double, playing: Boolean, nanos: Long): Double {
+        if (!playing) {
+            smoothedAt = 0L
+            return reported
+        }
+        when {
+            smoothedAt == 0L -> held = reported
+            // Output has not started yet; extrapolating now would run ahead of the music.
+            held == reported -> {}
+            !held.isNaN() -> held = Double.NaN
+            else -> {
+                val predicted = smoothed + (nanos - smoothedAt) / 1e9 * rate
+                val drift = reported - predicted
+                smoothed = if (abs(drift) > RESYNC) reported else predicted + drift * EASE
+                smoothedAt = nanos
+                return smoothed
+            }
+        }
+        smoothed = reported
+        smoothedAt = nanos
+        return reported
+    }
+
+    private companion object {
+        const val RESYNC = .060
+        const val EASE = .06
+    }
 }
 
 /**
@@ -110,7 +178,8 @@ class GameView(
     private val medium = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val heavy = Typeface.create("sans-serif-black", Typeface.NORMAL)
     private val density = resources.displayMetrics.density
-    private val offset = options.offsetMs / 1000.0
+    // The offset is device latency in real time, so it covers more of the song at higher speeds.
+    private val offset = options.offsetMs / 1000.0 * options.speed
     private val particles = HitParticles()
     private val pauseGlyph = Glyph(Glyph.Kind.PAUSE, Palette.TEXT)
     private val heart = Glyph(Glyph.Kind.HEART, Palette.RED)
@@ -408,7 +477,7 @@ class GameView(
             clock.start(options.speed)
         }
         val time =
-            if (started) clock.positionMs / 1000.0 + offset
+            if (started) clock.seconds + offset
             else options.startMs / 1000.0 - (1 - countdown.coerceIn(0f, 1f)) * INTRO_MS / 1000.0
         songTime = time
         if (rolling && options.timeLimitMs > 0) {
@@ -1188,7 +1257,8 @@ class GameView(
         if (!rolling || ended || endingAt > 0) return true
         val laneWidth = width / 4f
         val lane = (x / laneWidth).toInt().coerceIn(0, 3)
-        val time = clock.positionMs / 1000.0 + offset
+        // Judge the moment the finger landed, not when the batched event reached the view.
+        val time = clock.secondsAt(event.eventTime) + offset
         var result = 0
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN,

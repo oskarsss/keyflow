@@ -22,6 +22,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.*
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import java.util.concurrent.Executors
 import org.json.JSONObject
 
@@ -54,6 +55,8 @@ class MainActivity : Activity() {
         Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "song-cleanup")
     }
     private var protectedSongId: String? = null
+    /** Shown on the next results screen when that run moved the timing offset. */
+    private var timingNote: String? = null
 
     /** A slice of a song played inside an arcade run. */
     private class Stage(val startMs: Int, val endMs: Int)
@@ -752,30 +755,14 @@ class MainActivity : Activity() {
 
     private fun heroLabel(@Suppress("UNUSED_PARAMETER") song: JSONObject) = "Play"
 
-    /** Overall download progress: the transfer is most of it, then conversion and charting. */
-    private fun downloadFraction(song: JSONObject): Float? {
-        val progress = song.optString("progress")
-        val percent = Regex("([0-9.]+)%").find(progress)?.groupValues?.get(1)?.toFloatOrNull()
-        return when {
-            song.has("chartProgress") -> .8f + song.optInt("chartProgress", 0).coerceIn(0, 100) / 100f * .19f
-            percent != null -> percent / 100f * .8f
-            progress.contains("MP3") -> .85f
-            progress.contains("beat") || progress.contains("chart") -> .93f
-            else -> null
-        }
-    }
+    /** Whole-song preparation: the download, then the on-device chart, as one progress value. */
+    private fun downloadFraction(song: JSONObject): Float? =
+        song.optDouble("prepared").takeIf { song.optString("status") == "caching" && !it.isNaN() }?.toFloat()
 
     private fun downloadStage(song: JSONObject): String {
-        val progress = song.optString("progress")
-        val percent = Regex("([0-9]+)(?:\\.[0-9]+)?%").find(progress)?.groupValues?.get(1)
-        return when {
-            song.optString("status") != "caching" -> "Getting music ready…"
-            song.has("chartProgress") -> "Preparing level · ${song.optInt("chartProgress", 0)}%"
-            percent != null -> "Preparing music · $percent%"
-            progress.contains("MP3") -> "Preparing audio…"
-            progress.contains("beat") || progress.contains("chart") -> "Matching tiles to the beat"
-            else -> "Preparing song…"
-        }
+        val fraction = downloadFraction(song) ?: return "Getting music ready…"
+        val stage = song.optString("progress").ifBlank { "Preparing song" }
+        return "$stage · ${(fraction * 100).toInt()}%"
     }
 
     /**
@@ -1029,20 +1016,26 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Keeps the next few unplayed levels downloaded, starting from the player's progress. */
+    /**
+     * Keeps the next few unplayed levels prepared, starting from the player's progress, and
+     * re-charts downloaded songs whose chart came from an older generator.
+     */
     private fun prefetch() {
-        if (!ArcadePreparation.connected(this)) return
         val playlist = store.playlist ?: return
         val id = playlist.optString("id")
         if (id == ORIGINALS) return
-        val wanted = store.upcoming(playlist)
+        val online = ArcadePreparation.connected(this)
+        val songs = playlist.getJSONArray("songs")
+        val stale = (0 until songs.length()).map { songs.getJSONObject(it) }
+            .filter { !store.offline(it) && store.songFile(it, "mp3").isFile }
+        val wanted = ((if (online) store.upcoming(playlist) else emptyList()) + stale)
             .filter { !store.offline(it) && it.optString("id") !in attemptedPrefetch }
         if (wanted.isEmpty()) return
         attemptedPrefetch.addAll(wanted.map { it.optString("id") })
         DownloadService.start(this, id)
     }
 
-    private fun preloadCount() = store.playlist?.let(store::preloadCount) ?: 3
+    private fun preloadCount() = store.playlist?.let(store::preloadCount) ?: LibraryStore.DEFAULT_PRELOAD
 
     // ---------------------------------------------------------------- arcade
 
@@ -1267,6 +1260,7 @@ class MainActivity : Activity() {
                 "${r.misses}" to "Misses",
             ),
         )
+        resultsTiming(body)
         if (r.score > previous && r.score > 0) celebrate()
     }
 
@@ -1312,9 +1306,15 @@ class MainActivity : Activity() {
         }
         divider(gameplay)
         settingRow(gameplay, "Timing offset", "Adjust if hits feel early or late") {
-            ui.stepper(prefs.getInt("timingOffset", 0), -300..300, 10, { ms ->
-                if (ms > 0) "+$ms ms" else "$ms ms"
-            }) { prefs.edit().putInt("timingOffset", it).apply() }
+            ui.stepper(prefs.getInt("timingOffset", 0), -TimingCalibration.RANGE_MS..TimingCalibration.RANGE_MS, 5, ::signedMs) {
+                prefs.edit().putInt("timingOffset", it).apply()
+            }
+        }
+        divider(gameplay)
+        settingRow(gameplay, "Learn timing from my hits", "Tunes the offset after every song") {
+            toggle(prefs.getBoolean("autoTiming", true), "Learn timing from my hits") {
+                prefs.edit().putBoolean("autoTiming", it).apply()
+            }
         }
         divider(gameplay)
         settingRow(gameplay, "Vibration", null) {
@@ -1708,6 +1708,7 @@ class MainActivity : Activity() {
                     "Song ${r.songs + 1}  ·  Speed ×" + String.format(Locale.US, "%.2f", r.speed ?: 1f)
                 else -> "Song ${r.songs + 1}  ·  ${song.optString("title")}"
             }
+        val speed = r?.speed ?: prefs.getFloat("speed", 1f)
         lateinit var view: GameView
         view =
             GameView(
@@ -1715,7 +1716,7 @@ class MainActivity : Activity() {
                 session,
                 clock,
                 GameView.Options(
-                    speed = r?.speed ?: prefs.getFloat("speed", 1f),
+                    speed = speed,
                     offsetMs = prefs.getInt("timingOffset", 0),
                     travel = r?.travel ?: GameView.travelForTempo(GameView.TRAVEL[prefs.getInt("noteSpeed", 1).coerceIn(0, 2)], rhythm.bpm),
                     haptics = prefs.getBoolean("haptics", true),
@@ -1733,6 +1734,7 @@ class MainActivity : Activity() {
                 object : GameView.Listener {
                     override fun finished(session: GameSession) {
                         handler.post {
+                            learnTiming(session, speed)
                             if (run != null) stageFinished(session, view.timeLeftMs)
                             else finishGame(song, session)
                         }
@@ -1749,6 +1751,24 @@ class MainActivity : Activity() {
         setContentView(root)
         if (!foreground) showPause()
     }
+
+    /** Moves the timing offset toward where this run's hits landed; see [TimingCalibration]. */
+    private fun learnTiming(session: GameSession, speed: Float) {
+        timingNote = null
+        val prefs = store.prefs
+        if (!prefs.getBoolean("autoTiming", true)) return
+        val errors = session.timingErrorsMs()
+        val lean = TimingCalibration.lean(errors, speed) ?: return
+        val before = prefs.getInt("timingOffset", 0)
+        val after = TimingCalibration.adjust(before, lean)
+        android.util.Log.i("Keyflow", "Timing: ${errors.size} hits leaned ${lean.roundToInt()} ms; offset $before -> $after ms")
+        if (after == before) return
+        prefs.edit().putInt("timingOffset", after).apply()
+        val side = if (lean > 0) "late" else "early"
+        timingNote = "Hits leaned ${abs(lean).roundToInt()} ms $side · timing offset now ${signedMs(after)}"
+    }
+
+    private fun signedMs(ms: Int) = if (ms > 0) "+$ms ms" else "$ms ms"
 
     /** Tile kinds in this level the player has never seen; each is introduced once. */
     private fun newKinds(session: GameSession): List<String> {
@@ -1823,6 +1843,8 @@ class MainActivity : Activity() {
         val previousBest = store.score(song)
         val xpBefore = store.xp
         store.record(song, session)
+        // The window of prepared levels moves on as soon as a level is cleared.
+        prefetch()
         val gained = store.award(session)
         store.markPlayedToday()
         store.prefs.edit().putBoolean("tutorialSeen", true).apply()
@@ -1880,6 +1902,7 @@ class MainActivity : Activity() {
                 "${session.misses}" to "Misses",
             ),
         )
+        resultsTiming(body)
         if (passed) celebrate()
     }
 
@@ -2004,6 +2027,13 @@ class MainActivity : Activity() {
                 },
             )
         body.addView(stats, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    private fun resultsTiming(body: LinearLayout) {
+        val note = timingNote ?: return
+        timingNote = null
+        ui.gap(body, 10)
+        body.addView(ui.text(note, 12.5f, Palette.MUTED).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2))
     }
 
     private fun celebrate() {

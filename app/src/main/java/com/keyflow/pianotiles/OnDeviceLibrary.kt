@@ -32,7 +32,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 else if (song.optString("status") in listOf("ready", "caching", "queued")) {
                     song.put("status", "pending")
                     song.remove("progress")
-                    song.remove("chartProgress")
+                    song.remove("prepared")
                 }
             }
             save(playlist)
@@ -122,7 +122,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             .put("id", UUID.randomUUID().toString())
             .put("title", title)
             .put("songs", JSONArray(songs.shuffled(random)))
-            .put("preloadCount", 3)
+            .put("preloadCount", LibraryStore.DEFAULT_PRELOAD)
             .also(::save)
     }
 
@@ -245,6 +245,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     val song = songs.getJSONObject(i)
                     song.put("status", if (store.offline(song)) "ready" else "pending")
                     song.remove("progress")
+                    song.remove("prepared")
                     song.remove("error")
                 }
                 save(playlist)
@@ -252,16 +253,25 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Downloads and charts one song. [progress] receives a message and the whole preparation's
+     * fraction. When [shouldYield] turns true during charting, preparation stops with [Yielded] and
+     * the song returns to pending; a finished download is kept for the next attempt.
+     */
     fun cacheSong(
         playlistId: String,
         songId: String,
         generation: Long = cacheGeneration,
-        progress: (String) -> Unit,
+        shouldYield: () -> Boolean = { false },
+        progress: (String, Double) -> Unit,
     ) = synchronized(cacheLock) {
-        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, progress)
+        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, shouldYield, progress)
     }
 
-    private fun cacheSongNow(playlistId: String, songId: String, progress: (String) -> Unit) {
+    /** Thrown when a song's preparation gives way to one the player is waiting for. */
+    class Yielded : RuntimeException("Preparation paused for another song")
+
+    private fun cacheSongNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit) {
         val playlist =
             requireNotNull(snapshot(playlistId)) { "Playlist not found. Import it again." }
         val songs = playlist.getJSONArray("songs")
@@ -278,21 +288,22 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             updateSong(playlistId, songId) { it.put("status", "ready") }
             return
         }
+        fun report(message: String, fraction: Double) {
+            updateSong(playlistId, songId) { it.put("progress", message).put("prepared", fraction) }
+            progress("$title · $message", fraction)
+        }
         val downloaded = store.songFile(song, "mp3")
         if (downloaded.isFile) {
             // Audio from an earlier version only needs a new chart.
-            updateSong(playlistId, songId) {
-                it.put("status", "caching").put("error", "").put("progress", "Building a new chart…")
-            }
-            progress("Finding the rhythm in $title…")
+            updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
             val chart = try {
-                writeChart(song, downloaded, songId) { percent ->
-                    updateSong(playlistId, songId) { it.put("chartProgress", percent).put("progress", "Preparing the level…") }
-                }
+                writeChart(song, downloaded, songId, shouldYield) { message, fraction -> report(message, fraction) }
             } catch (error: Throwable) {
                 updateSong(playlistId, songId) {
-                    it.put("status", "error").put("failedAt", System.currentTimeMillis())
+                    if (error is Yielded) it.put("status", "pending").remove("progress")
+                    else it.put("status", "error").put("failedAt", System.currentTimeMillis())
                         .put("error", error.message ?: "Chart failed. Please retry.")
+                    it.remove("prepared")
                 }
                 throw error
             }
@@ -301,67 +312,57 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     .put("duration", chart.duration)
                     .put("chartMethod", chart.method)
                     .put("progress", "Offline ready")
-                    .remove("chartProgress")
+                    .remove("prepared")
             }
             return
         }
-        updateSong(playlistId, songId) {
-            it.put("status", "caching")
-                .put("error", "")
-                .put("progress", "Downloading on this phone…")
-        }
+        updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
+        report("Downloading", 0.0)
         val folder = File(context.cacheDir, "downloads/$songId").apply { mkdirs() }
         val job = "song-$songId"
+        val audio = File(folder, "source.mp3")
+        val info = File(folder, "source.info.json")
+        val complete = File(folder, "complete")
         try {
-            val request =
-                YTDLRequest("https://www.youtube.com/watch?v=$songId")
-                    .addOption("--format", "bestaudio")
-                    .addOption("--extract-audio")
-                    .addOption("--audio-format", "mp3")
-                    .addOption("--audio-quality", 0)
-                    .addOption("--add-metadata")
-                    .addOption("--embed-thumbnail")
-                    .addOption("--write-thumbnail")
-                    .addOption("--convert-thumbnails", "jpg")
-                    .addOption("--write-info-json")
-                    .addOption("--no-mtime")
-                    .addOption("--newline")
-                    .addOption("--socket-timeout", 20)
-                    .addOption("--retries", 2)
-                    .addOption("--max-filesize", "100M")
-                    .addOption("--match-filters", "duration <= 1200")
-                    .addOption("--output", File(folder, "source.%(ext)s").path)
-            var lastProgress = 0L
-            runtime.execute(request, job, 600) { line ->
-                val now = System.currentTimeMillis()
-                if (
-                    now - lastProgress > 750 &&
-                        (line.contains("[download]") ||
-                            line.contains("[ExtractAudio]") ||
-                            line.startsWith("Preparing"))
-                ) {
-                    lastProgress = now
-                    val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)
-                    val message = when {
-                        percent != null -> "Downloading audio · $percent%"
-                        line.contains("[ExtractAudio]") -> "Preparing MP3 audio…"
-                        line.startsWith("Preparing") -> line
-                        else -> "Downloading audio on this phone…"
+            // A download whose chart gave way to another song is reused as is.
+            if (!complete.isFile) {
+                val request =
+                    YTDLRequest("https://www.youtube.com/watch?v=$songId")
+                        .addOption("--format", "bestaudio")
+                        .addOption("--extract-audio")
+                        .addOption("--audio-format", "mp3")
+                        .addOption("--audio-quality", 0)
+                        .addOption("--add-metadata")
+                        .addOption("--embed-thumbnail")
+                        .addOption("--write-thumbnail")
+                        .addOption("--convert-thumbnails", "jpg")
+                        .addOption("--write-info-json")
+                        .addOption("--no-mtime")
+                        .addOption("--newline")
+                        .addOption("--socket-timeout", 20)
+                        .addOption("--retries", 2)
+                        .addOption("--max-filesize", "100M")
+                        .addOption("--match-filters", "duration <= 1200")
+                        .addOption("--output", File(folder, "source.%(ext)s").path)
+                var lastProgress = 0L
+                runtime.execute(request, job, 600) { line ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastProgress > 750 && (line.contains("[download]") || line.contains("[ExtractAudio]"))) {
+                        lastProgress = now
+                        val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+                        when {
+                            line.contains("[ExtractAudio]") -> report("Converting audio", DOWNLOAD_SHARE)
+                            percent != null -> report("Downloading", percent.coerceIn(0.0, 100.0) / 100 * (DOWNLOAD_SHARE - .03))
+                        }
                     }
-                    updateSong(playlistId, songId) { it.put("progress", message) }
-                    progress("$title: $message")
                 }
+                check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
+                complete.createNewFile()
             }
-            val audio = File(folder, "source.mp3")
-            check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
-            progress("Finding the rhythm in $title…")
-            updateSong(playlistId, songId) {
-                it.put("progress", "Matching tiles to the beat…")
+            val chart = writeChart(song, audio, songId, shouldYield) { message, fraction ->
+                report(message, DOWNLOAD_SHARE + fraction * (1 - DOWNLOAD_SHARE))
             }
-            val chart = writeChart(song, audio, songId) { percent ->
-                updateSong(playlistId, songId) { it.put("chartProgress", percent).put("progress", "Preparing the level…") }
-            }
-            val metadata = JSONObject(File(folder, "source.info.json").readText())
+            val metadata = JSONObject(info.readText())
             Files.move(
                 audio.toPath(),
                 store.songFile(song, "mp3").toPath(),
@@ -394,29 +395,46 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                             metadata.optString("uploader", song.optString("artist"))
                         },
                     )
-                value.remove("chartProgress")
+                value.remove("prepared")
             }
             folder.deleteRecursively()
         } catch (error: Throwable) {
+            if (error is Yielded) {
+                updateSong(playlistId, songId) { it.put("status", "pending").remove("progress"); it.remove("prepared") }
+                throw error
+            }
             File(folder, "download.log").writeText(error.message ?: "Download failed")
             updateSong(playlistId, songId) {
                 it.put("status", "error")
                     .put("failedAt", System.currentTimeMillis())
                     .put("error", error.message?.takeLast(2000) ?: "Download failed. Please retry.")
+                it.remove("prepared")
             }
             throw error
         }
     }
 
-    private fun writeChart(song: JSONObject, audio: File, songId: String, progress: (Int) -> Unit): AudioChart.Chart {
-        progress(0)
+    /** [progress] gets this step's own fraction; the chart model is most of the work. */
+    private fun writeChart(
+        song: JSONObject,
+        audio: File,
+        songId: String,
+        shouldYield: () -> Boolean,
+        progress: (String, Double) -> Unit,
+    ): AudioChart.Chart {
+        progress("Finding the beat", 0.0)
         val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
         val rhythm = BeatThis(context).analyze(features)
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
+        if (shouldYield()) throw Yielded()
+        progress("Placing tiles", BEAT_SHARE)
         val temporary = File.createTempFile("chart-audio-", ".pcm", context.cacheDir)
         val learned = try {
             runtime.audioSamples(audio, "chart-model-$songId", ChartAudio.RATE) { ChartAudio.readPcm(it, temporary) }.use {
-                ManiaChartModel(context).analyze(it, rhythm, progress)
+                ManiaChartModel(context).analyze(it, rhythm) { percent ->
+                    if (shouldYield()) throw Yielded()
+                    progress("Placing tiles", BEAT_SHARE + percent / 100.0 * (.99 - BEAT_SHARE))
+                }
             }
         } finally { temporary.delete() }
         val chart = ChartStructure.describe(features, rhythm, learned)
@@ -446,6 +464,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
 
     companion object {
         private val SONG_ID = Regex("[A-Za-z0-9_-]{11}")
+
+        /** Shares of a song's preparation: the transfer, then beats before the slower chart model. */
+        const val DOWNLOAD_SHARE = .35
+        const val BEAT_SHARE = .15
         const val MAX_TITLE = 60
 
         @Volatile private var instance: OnDeviceLibrary? = null

@@ -76,7 +76,7 @@ class ImportedPlaylistTest {
         source.getJSONArray("entries").getJSONObject(0).put("title", "Changed upstream")
         val second = library.createPlaylist(source, Random(27))
         assertNotEquals(firstId, second.getString("id"))
-        assertEquals(3, second.getInt("preloadCount"))
+        assertEquals(LibraryStore.DEFAULT_PRELOAD, second.getInt("preloadCount"))
         assertEquals(original, library.snapshot(firstId)!!.toString())
         val restarted = OnDeviceLibrary(context)
         assertEquals(2, restarted.savedPlaylists().size)
@@ -182,7 +182,7 @@ class ImportedPlaylistTest {
             }
         }
         // These IDs would fail immediately if stale queued work reached the downloader.
-        library.cacheSong("missing-playlist", "missing-song", generation) { fail("Stale queue ran") }
+        library.cacheSong("missing-playlist", "missing-song", generation) { _, _ -> fail("Stale queue ran") }
         assertFalse(store.offline(song))
     }
 

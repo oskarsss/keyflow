@@ -28,10 +28,12 @@ class DownloadService : Service() {
     private val order = ArrayDeque<String>()
     private val pending = AtomicInteger()
     private lateinit var library: OnDeviceLibrary
+    private lateinit var store: LibraryStore
 
     override fun onCreate() {
         super.onCreate()
         library = OnDeviceLibrary.get(this)
+        store = LibraryStore(this)
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(
                 NotificationChannel(CHANNEL, "Song downloads", NotificationManager.IMPORTANCE_LOW),
@@ -39,7 +41,7 @@ class DownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(15, notification())
+        startForeground(NOTIFICATION, notification())
         planning.incrementAndGet()
         planner.execute {
             try { runCatching { enqueue(intent) }.onFailure {
@@ -72,62 +74,99 @@ class DownloadService : Service() {
         val all = intent.getBooleanExtra("all", false)
         val songs = playlist.getJSONArray("songs")
         val byId = (0 until songs.length()).map { songs.getJSONObject(it) }.associateBy { it.getString("id") }
-        val store = LibraryStore(this)
+        val fromNext = (0 until songs.length()).map { songs.getJSONObject(it) }.let { order ->
+            val from = order.indexOfFirst { !store.completed(it) }.coerceAtLeast(0)
+            order.drop(from) + order.take(from)
+        }
         val ids =
             when {
                 selected != null -> listOf(selected)
                 // The whole playlist, starting from the next level to play.
-                all -> {
-                    val order = (0 until songs.length()).map { songs.getJSONObject(it) }
-                    val from = order.indexOfFirst { !store.completed(it) }.coerceAtLeast(0)
-                    (order.drop(from) + order.take(from)).map { it.getString("id") }
-                }
-                else -> store.upcoming(playlist).map { it.getString("id") }
+                all -> fromNext.map { it.getString("id") }
+                // The next levels, then every downloaded song whose chart is from an older generator.
+                else -> (store.upcoming(playlist) + fromNext.filter(::rechart)).map { it.getString("id") }.distinct()
             }
         val requestedNow = selected != null || all
+        val online = ArcadePreparation.connected(this)
         for (songId in ids) {
             val song = byId[songId] ?: continue
             if (store.offline(song)) continue
+            if (!requestedNow && !online && !rechart(song)) continue
             val generation = library.cacheGeneration
             val key = "$generation:$id:$songId"
             val added = synchronized(queued) {
-                fun insert() {
-                    val before = order.indexOfFirst { (ranks[it] ?: 0) < rank }
-                    if (before < 0) order.addLast(key) else order.add(before, key)
-                }
                 if (queued.containsKey(key)) {
                     if (requestedNow) queued[key] = true
                     if (rank > (ranks[key] ?: 0)) {
                         ranks[key] = rank
-                        if (order.remove(key)) insert()
+                        if (order.remove(key)) insert(key)
                     }
                     false
                 } else {
                     queued[key] = requestedNow
                     ranks[key] = rank
-                    insert()
+                    insert(key)
                     true
                 }
             }
             if (!added) continue
             pending.incrementAndGet()
-            executor.execute {
-                val next = synchronized(queued) { order.removeFirstOrNull() }
-                if (next != null) runCatching {
-                    val (generation, playlistId, songId) = next.split(":", limit = 3)
-                    val latest = library.snapshot(playlistId)
-                    val requested = synchronized(queued) { queued[next] == true }
-                    if (requested || latest != null && store.upcoming(latest).any { it.getString("id") == songId })
-                        library.cacheSong(playlistId, songId, generation.toLong()) {}
-                }
-                synchronized(queued) { queued.remove(next); ranks.remove(next) }
-                pending.decrementAndGet()
-                main.post(::stopIfIdle)
-            }
+            executor.execute(::work)
         }
     }
 
-    private fun notification(): Notification {
+    /** Charts for audio already on the phone need no connection, only a newer chart. */
+    private fun rechart(song: org.json.JSONObject) = store.songFile(song, "mp3").isFile && !store.offline(song)
+
+    private fun insert(key: String) {
+        val rank = ranks[key] ?: 0
+        val before = order.indexOfFirst { (ranks[it] ?: 0) < rank }
+        if (before < 0) order.addLast(key) else order.add(before, key)
+    }
+
+    /** Prepares the song at the front of the queue; there is one call per queued song. */
+    private fun work() {
+        val next = synchronized(queued) { order.removeFirstOrNull() }
+        var requeued = false
+        if (next != null) runCatching {
+            val (generation, playlistId, songId) = next.split(":", limit = 3)
+            val latest = library.snapshot(playlistId)
+            val song = latest?.getJSONArray("songs")?.let { songs ->
+                (0 until songs.length()).map { songs.getJSONObject(it) }.firstOrNull { it.getString("id") == songId }
+            }
+            val (requested, rank) = synchronized(queued) { (queued[next] == true) to (ranks[next] ?: 0) }
+            if (requested || latest != null && song != null &&
+                (store.upcoming(latest).any { it.getString("id") == songId } || rechart(song))) {
+                var shown = 0L
+                library.cacheSong(
+                    playlistId, songId, generation.toLong(),
+                    // Give way when the player is waiting for a different song.
+                    shouldYield = { rank < WAITING && synchronized(queued) { order.firstOrNull()?.let { ranks[it] } == WAITING } },
+                ) { message, fraction ->
+                    val now = System.currentTimeMillis()
+                    if (now - shown > 1000) {
+                        shown = now
+                        getSystemService(NotificationManager::class.java)
+                            .notify(NOTIFICATION, notification(message, fraction, pending.get() - 1))
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (error is OnDeviceLibrary.Yielded) synchronized(queued) {
+                insert(next!!)
+                requeued = true
+            }
+        }
+        if (requeued) {
+            executor.execute(::work)
+            return
+        }
+        synchronized(queued) { queued.remove(next); ranks.remove(next) }
+        pending.decrementAndGet()
+        main.post(::stopIfIdle)
+    }
+
+    private fun notification(message: String? = null, fraction: Double = 0.0, more: Int = 0): Notification {
         val open =
             PendingIntent.getActivity(
                 this,
@@ -138,7 +177,11 @@ class DownloadService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("Keyflow · Preparing music")
-            .setContentText("Getting your next songs ready")
+            .setContentText(message ?: "Getting your next songs ready")
+            .apply {
+                if (message != null) setProgress(100, (fraction * 100).toInt().coerceIn(0, 100), false)
+                if (more > 0) setSubText("$more more queued")
+            }
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -155,6 +198,9 @@ class DownloadService : Service() {
 
     companion object {
         private const val CHANNEL = "downloads"
+        private const val NOTIFICATION = 15
+        /** Queue rank of a song the player opened and is waiting for. */
+        private const val WAITING = 2
 
         fun start(context: Context, playlistId: String, songId: String? = null, all: Boolean = false, background: Boolean = false) {
             context.startForegroundService(
