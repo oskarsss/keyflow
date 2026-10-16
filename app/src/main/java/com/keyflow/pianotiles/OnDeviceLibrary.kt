@@ -156,16 +156,21 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     fun protectPlayback(id: String) { playing.add(id) }
     fun releasePlayback(id: String) { playing.remove(id) }
 
-    /** Disk cleanup never changes playlists, scores or progression, or removes a playing song. */
+    /** Disk cleanup never changes playlists, scores or progression, or removes a playing or next song. */
     fun pruneUnused(days: Int, now: Long = System.currentTimeMillis()): Int = synchronized(cacheLock) {
         require(days in 1..365)
         if (!store.prefs.getBoolean("smartStorage", true)) return@synchronized 0
         val cutoff = now - days * 86_400_000L
         val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
         var removed = 0
+        // Every playlist keeps its next level and the locked one after it, however old, and
+        // playlists set to keep their downloads keep every song.
+        val playlists = savedPlaylists()
+        val next = (playlists.flatMap(store::essential) + playlists.filter(store::keepsDownloads).flatMap(::songsOf))
+            .map { it.optString("id") }.toSet()
         for (entry in arcadeSongs()) {
             if (!store.prefs.getBoolean("smartStorage", true)) break
-            if (entry.demo || entry.id in playing || entry.id in store.prefs.getStringSet("arcade.reserve", emptySet()).orEmpty()) continue
+            if (entry.demo || entry.id in next || entry.id in playing || entry.id in store.prefs.getStringSet("arcade.reserve", emptySet()).orEmpty()) continue
             val audio = store.songFile(entry.song, "mp3")
             if (!audio.isFile) continue
             // A fresh download gets a full retention period, even if it was played long ago.
@@ -222,7 +227,57 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             for (file in listOf(store.songFile(song, "mp3"), store.chartFile(song), store.songFile(song, "json"), store.songFile(song, "jpg")))
                 file.delete()
         }
-        store.prefs.edit().remove("preload.$id").apply()
+        store.prefs.edit().remove("preload.$id").remove("keep.$id").apply()
+    }
+
+    /**
+     * Frees a playlist's downloads, except songs another playlist also has, the next level and
+     * the locked one after it, and a song that is playing. Scores and unlocks are kept.
+     */
+    fun removeDownloads(id: String): Int = synchronized(cacheLock) {
+        val playlist = snapshot(id) ?: return@synchronized 0
+        val shared = savedPlaylists().filter { it.optString("id") != id }.flatMap(::songsOf).map { it.optString("id") }.toSet()
+        val next = store.essential(playlist).map { it.optString("id") }.toSet()
+        val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
+        var removed = 0
+        for (song in songsOf(playlist)) {
+            val songId = song.optString("id")
+            if (song.optBoolean("demo") || songId in shared || songId in next || songId in playing) continue
+            val found = files[songId].orEmpty()
+            val download = File(context.cacheDir, "downloads/$songId")
+            if (found.isEmpty() && !download.exists()) continue
+            found.forEach { it.delete() }
+            download.deleteRecursively()
+            removed++
+        }
+        if (removed > 0) synchronized(lock) {
+            val latest = snapshot(id) ?: return@synchronized
+            for (song in songsOf(latest))
+                if (!store.offline(song) && song.optString("status") in setOf("ready", "error"))
+                    song.put("status", "pending").remove("progress")
+            save(latest)
+        }
+        removed
+    }
+
+    /** How many of [songs] are ready to play offline, and the space their files take. */
+    fun usage(songs: List<JSONObject>): Pair<Int, Long> {
+        val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
+        val ids = songs.filter { !it.optBoolean("demo") }.map { it.optString("id") }.toSet()
+        val bytes = ids.sumOf { id ->
+            files[id].orEmpty().sumOf { it.length() } +
+                File(context.cacheDir, "downloads/$id").walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        }
+        return songs.count { !it.optBoolean("demo") && store.offline(it) } to bytes
+    }
+
+    fun setKeepDownloads(id: String, keep: Boolean) {
+        store.prefs.edit().putBoolean("keep.$id", keep).apply()
+    }
+
+    private fun songsOf(playlist: JSONObject): List<JSONObject> {
+        val songs = playlist.getJSONArray("songs")
+        return (0 until songs.length()).map { songs.getJSONObject(it) }
     }
 
     fun setPreload(id: String, count: Int): JSONObject = synchronized(lock) {
@@ -233,6 +288,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         save(playlist)
         playlist
     }
+
+    /** Space taken by downloaded songs, their charts and covers, and downloads kept for reuse. */
+    fun downloadedBytes(): Long = listOf(File(context.filesDir, "songs"), File(context.cacheDir, "downloads"))
+        .sumOf { folder -> folder.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
 
     fun clearDownloads() = synchronized(cacheLock) {
         cacheGeneration++

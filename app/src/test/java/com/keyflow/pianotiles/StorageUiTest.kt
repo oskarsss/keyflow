@@ -49,4 +49,39 @@ class StorageUiTest {
             assertTrue(texts(activity).contains("Clear downloaded songs"))
         }
     }
+
+    @Test
+    fun settingsShowTotalsAndEachPlaylistKeepsItsOwnDownloadSettings() {
+        val context = RuntimeEnvironment.getApplication()
+        val store = LibraryStore(context)
+        store.prefs.edit().clear().commit()
+        java.io.File(context.filesDir, "playlists").deleteRecursively()
+        val library = OnDeviceLibrary.get(context)
+        val playlist = library.createPlaylist(
+            org.json.JSONObject().put("title", "Road trip").put("entries", org.json.JSONArray((0..3).map {
+                org.json.JSONObject().put("id", "roadtrip%03d".format(it)).put("title", "Song $it")
+            })), kotlin.random.Random(1),
+        )
+        store.save(playlist)
+        Robolectric.buildActivity(MainActivity::class.java).setup().use { controller ->
+            val activity = controller.get()
+            views(activity.window.decorView).first { it.contentDescription == "Settings" }.performClick()
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            val deadline = System.currentTimeMillis() + 5000
+            while (views(activity.window.decorView).none { it.contentDescription == "Download settings for Road trip" }) {
+                check(System.currentTimeMillis() < deadline) { "Playlist totals never appeared" }
+                Thread.sleep(20)
+                shadowOf(android.os.Looper.getMainLooper()).idle()
+            }
+            assertTrue(texts(activity).any { it.startsWith("0 of 4 songs downloaded") })
+            assertTrue(texts(activity).contains("0 of 4 songs · 0 B"))
+            assertFalse(texts(activity).contains("Download ahead"))
+            views(activity.window.decorView).first { it.contentDescription == "Download settings for Road trip" }.performClick()
+            for (label in listOf("Download ahead", "Keep downloaded songs", "Download all songs", "Remove downloaded songs", "Rename", "Delete playlist"))
+                assertTrue(label, texts(activity).contains(label))
+            activity.onBackPressed()
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertTrue(texts(activity).contains("Smart storage management"))
+        }
+    }
 }

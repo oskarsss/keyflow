@@ -27,7 +27,7 @@ import java.util.concurrent.Executors
 import org.json.JSONObject
 
 class MainActivity : Activity() {
-    enum class Screen { WELCOME, IMPORT, HOME, PLAYLISTS, SETTINGS, ARCADE, LOADING, GAME, RESULTS }
+    enum class Screen { WELCOME, IMPORT, HOME, PLAYLISTS, PLAYLIST, SETTINGS, ARCADE, LOADING, GAME, RESULTS }
 
     private val handler = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
@@ -474,9 +474,9 @@ class MainActivity : Activity() {
             ui.weight(item, info)
             ui.gap(item, 4)
             if (imported) {
-                val more = ui.iconButton(Glyph.Kind.MORE, "More options for $title", Palette.MUTED) {}
-                more.setOnClickListener { playlistMenu(more, playlist) }
-                item.addView(more)
+                item.addView(ui.iconButton(Glyph.Kind.GEAR, "Settings for $title", Palette.MUTED) {
+                    showPlaylistSettings(playlist.getString("id"), Screen.PLAYLISTS)
+                })
             } else item.addView(ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.FAINT, 20), LinearLayout.LayoutParams(dp(48), dp(48)))
             ui.fill(body, item)
             ui.gap(body, 10)
@@ -501,7 +501,7 @@ class MainActivity : Activity() {
     private fun downloadAll(playlist: JSONObject) {
         val songs = playlist.getJSONArray("songs")
         val missing = (0 until songs.length()).count { !store.offline(songs.getJSONObject(it)) }
-        if (missing == 0) return
+        if (missing == 0) return Toast.makeText(this, "Every song is already downloaded", Toast.LENGTH_SHORT).show()
         val id = playlist.getString("id")
         Toast.makeText(this, "Downloading $missing songs", Toast.LENGTH_SHORT).show()
         io.execute {
@@ -513,20 +513,76 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun playlistMenu(anchor: View, playlist: JSONObject) {
-        val menu = android.widget.PopupMenu(this, anchor)
-        menu.menu.add(0, 1, 0, "Rename")
+    /** One playlist's own settings: how much of it stays on the phone, and its name. */
+    private fun showPlaylistSettings(id: String, from: Screen? = null) {
+        if (from != null) playlistSettingsFrom = from
+        val playlist = library.snapshot(id) ?: return leavePlaylistSettings()
+        val title = playlist.optString("title")
+        val body = page(Screen.PLAYLIST, bar(title) { leavePlaylistSettings() })
+        val songs = playlist.getJSONArray("songs")
+        val list = (0 until songs.length()).map { songs.getJSONObject(it) }
 
-        menu.menu.add(0, 3, 2, "Delete")
-        menu.setOnMenuItemClickListener {
-            when (it.itemId) {
-                1 -> renamePlaylist(playlist)
-                else -> confirmDelete(playlist)
-            }
-            true
+        val downloads = section(body, "Downloads")
+        val stats = ui.text("Checking storage…", 13f, Palette.MUTED).apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
+        ui.fill(downloads, stats)
+        io.execute {
+            val (ready, bytes) = library.usage(list)
+            val size = android.text.format.Formatter.formatShortFileSize(this, bytes)
+            handler.post { if (!isDestroyed) stats.text = "$ready of ${list.size} songs downloaded · $size" }
         }
-        menu.show()
+        settingRow(downloads, "Download ahead", "Levels kept ready, from your next one") {
+            ui.stepper(store.preloadCount(playlist), LibraryStore.MIN_PRELOAD..20, 1, { "$it" }) { count ->
+                store.prefs.edit().putInt("preload.$id", count).apply()
+                attemptedPrefetch.clear()
+                io.execute {
+                    runCatching { library.setPreload(id, count) }.onSuccess { updated ->
+                        handler.post {
+                            if (store.playlist?.optString("id") == id) store.save(updated)
+                            prefetch()
+                        }
+                    }
+                }
+            }
+        }
+        divider(downloads)
+        settingRow(downloads, "Keep downloaded songs", "Smart storage won't remove them") {
+            toggle(store.keepsDownloads(playlist), "Keep downloaded songs") { library.setKeepDownloads(id, it) }
+        }
+        divider(downloads)
+        actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download all songs", "Keep every song available without internet", Palette.TEXT) {
+            downloadAll(playlist)
+        }
+        divider(downloads)
+        actionRow(downloads, Glyph.Kind.TRASH, "Remove downloaded songs", "Your next two levels, scores and unlocks stay", Palette.RED) {
+            AlertDialog.Builder(this)
+                .setTitle("Remove downloaded songs?")
+                .setMessage("Songs from “$title” download again when you play them. Songs other playlists also have are kept.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Remove") { _, _ ->
+                    io.execute {
+                        val removed = library.removeDownloads(id)
+                        handler.post {
+                            if (isDestroyed) return@post
+                            attemptedPrefetch.clear()
+                            Toast.makeText(this, if (removed == 1) "Removed 1 song" else "Removed $removed songs", Toast.LENGTH_SHORT).show()
+                            if (screen == Screen.PLAYLIST) showPlaylistSettings(id)
+                        }
+                    }
+                }
+                .show()
+        }
+
+        val details = section(body, "Playlist")
+        actionRow(details, Glyph.Kind.EDIT, "Rename", title, Palette.TEXT) { renamePlaylist(playlist) }
+        divider(details)
+        actionRow(details, Glyph.Kind.TRASH, "Delete playlist", "Scores for its songs stay saved", Palette.RED) {
+            confirmDelete(playlist)
+        }
     }
+
+    private var playlistSettingsFrom = Screen.PLAYLISTS
+
+    private fun leavePlaylistSettings() = if (playlistSettingsFrom == Screen.SETTINGS) showSettings() else showPlaylists()
 
     private fun renamePlaylist(playlist: JSONObject) {
         val id = playlist.getString("id")
@@ -563,6 +619,7 @@ class MainActivity : Activity() {
                 val updated = library.rename(id, title)
                 if (store.playlist?.optString("id") == id) store.save(updated)
                 if (screen == Screen.PLAYLISTS) showPlaylists()
+                else if (screen == Screen.PLAYLIST) showPlaylistSettings(id)
             }
         }
         input.setOnEditorActionListener { _, _, _ ->
@@ -601,6 +658,7 @@ class MainActivity : Activity() {
                 }
                 Toast.makeText(this, "Playlist deleted", Toast.LENGTH_SHORT).show()
                 if (screen == Screen.PLAYLISTS) showPlaylists()
+                else if (screen == Screen.PLAYLIST) leavePlaylistSettings()
             }
         }
     }
@@ -703,6 +761,7 @@ class MainActivity : Activity() {
         addJourney(body, songs, next)
         startPolling()
         prefetch()
+        arcadePreparation.prepareSoon()
     }
 
     private fun addHero(body: LinearLayout, index: Int, song: JSONObject) {
@@ -1017,25 +1076,38 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Keeps the next few unplayed levels prepared, starting from the player's progress, and
-     * re-charts downloaded songs whose chart came from an older generator.
+     * Keeps every playlist's next level and the locked one after it prepared, so play is never
+     * held up by a download. Those come first, then the rest of the current playlist's window
+     * and downloaded songs whose chart came from an older generator.
      */
     private fun prefetch() {
-        val playlist = store.playlist ?: return
-        val id = playlist.optString("id")
-        if (id == ORIGINALS) return
-        val online = ArcadePreparation.connected(this)
-        val songs = playlist.getJSONArray("songs")
-        val stale = (0 until songs.length()).map { songs.getJSONObject(it) }
-            .filter { !store.offline(it) && store.songFile(it, "mp3").isFile }
-        val wanted = ((if (online) store.upcoming(playlist) else emptyList()) + stale)
-            .filter { !store.offline(it) && it.optString("id") !in attemptedPrefetch }
-        if (wanted.isEmpty()) return
-        attemptedPrefetch.addAll(wanted.map { it.optString("id") })
-        DownloadService.start(this, id)
+        val currentId = store.playlist?.optString("id")
+        io.execute {
+            val online = ArcadePreparation.connected(this)
+            val playlists = library.savedPlaylists().filter { it.optString("id") != ORIGINALS }
+                .sortedByDescending { it.optString("id") == currentId }
+            fun missing(songs: List<JSONObject>) = songs.filter { !store.offline(it) }.map { it.optString("id") }
+            val requests = mutableListOf<Triple<String, Boolean, List<String>>>()
+            for (playlist in playlists)
+                requests += Triple(playlist.optString("id"), true, if (online) missing(store.essential(playlist)) else emptyList())
+            playlists.firstOrNull { it.optString("id") == currentId }?.let { playlist ->
+                val songs = playlist.getJSONArray("songs")
+                val stale = (0 until songs.length()).map { songs.getJSONObject(it) }
+                    .filter { store.songFile(it, "mp3").isFile }
+                requests += Triple(playlist.optString("id"), false,
+                    missing((if (online) store.upcoming(playlist) else emptyList()) + stale))
+            }
+            handler.post {
+                if (isDestroyed) return@post
+                for ((id, essential, songs) in requests) {
+                    val wanted = songs.filter { it !in attemptedPrefetch }
+                    if (wanted.isEmpty()) continue
+                    attemptedPrefetch.addAll(wanted)
+                    DownloadService.start(this, id, essential = essential)
+                }
+            }
+        }
     }
-
-    private fun preloadCount() = store.playlist?.let(store::preloadCount) ?: LibraryStore.DEFAULT_PRELOAD
 
     // ---------------------------------------------------------------- arcade
 
@@ -1149,7 +1221,7 @@ class MainActivity : Activity() {
         body.addView(card, LinearLayout.LayoutParams(-1, -2))
         refreshBest()
         ui.gap(body, 20)
-        body.addView(ui.text("Random music from your playlists", 13f, Palette.MUTED))
+        body.addView(ui.text("Random songs from the levels you've reached", 13f, Palette.MUTED))
     }
 
     private fun startArcade(mode: Arcade.Mode, minutes: Int) {
@@ -1182,6 +1254,7 @@ class MainActivity : Activity() {
         io.execute {
             val ready = arcadePool().filter { it.demo || store.offline(it.song) }
             val entry = arcadePreparation.pick(ready, r.recent, kotlin.random.Random.Default)
+                ?.also { arcadePreparation.played(it.id) }
             if (entry == null) {
                 handler.post { if (operation == op && run === r && !isDestroyed) finishRun() }
                 return@execute
@@ -1196,7 +1269,7 @@ class MainActivity : Activity() {
             handler.post {
                 if (operation != op || isDestroyed || run !== r) return@post
                 r.remember(entry.id)
-                arcadePreparation.start(r.recent)
+                arcadePreparation.start()
                 launchGame(song, -1, Stage(start, end))
             }
         }
@@ -1324,10 +1397,35 @@ class MainActivity : Activity() {
         val downloads = section(body, "Storage and downloads")
         val stats = ui.text("Checking storage…", 13f, Palette.MUTED).apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
         ui.fill(downloads, stats)
+        // Each playlist's share; its own download settings are a tap away.
+        val perPlaylist = ui.column()
+        ui.fill(downloads, perPlaylist)
+        divider(downloads)
         io.execute {
             val songs = library.arcadeSongs()
             val ready = songs.count { store.offline(it.song) }
-            handler.post { if (!isDestroyed) stats.text = "$ready of ${songs.size} songs downloaded" }
+            val size = android.text.format.Formatter.formatShortFileSize(this, library.downloadedBytes())
+            val playlists = library.savedPlaylists().map { playlist ->
+                val list = playlist.getJSONArray("songs").let { a -> (0 until a.length()).map(a::getJSONObject) }
+                val (count, bytes) = library.usage(list)
+                Triple(playlist, "$count of ${list.size} songs", android.text.format.Formatter.formatShortFileSize(this, bytes))
+            }
+            handler.post {
+                if (isDestroyed || screen != Screen.SETTINGS) return@post
+                stats.text = "$ready of ${songs.size} songs downloaded · $size used"
+                for ((playlist, count, bytes) in playlists) {
+                    divider(perPlaylist)
+                    val row = ui.row().apply {
+                        setPadding(dp(18), dp(14), dp(14), dp(14))
+                        ui.pressable(this, null, 20)
+                        contentDescription = "Download settings for ${playlist.optString("title")}"
+                        setOnClickListener { showPlaylistSettings(playlist.getString("id"), Screen.SETTINGS) }
+                    }
+                    ui.weight(row, labels(playlist.optString("title"), "$count · $bytes"))
+                    row.addView(ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.FAINT, 20))
+                    ui.fill(perPlaylist, row)
+                }
+            }
         }
         settingRow(downloads, "Smart storage management", "Remove songs you haven't played recently") {
             toggle(prefs.getBoolean("smartStorage", true), "Smart storage management") {
@@ -1343,21 +1441,6 @@ class MainActivity : Activity() {
             }
         }
         divider(downloads)
-        if (!isOriginals) {
-            val id = store.playlist!!.optString("id")
-            settingRow(downloads, "Download ahead", "Upcoming levels kept offline") {
-                ui.stepper(preloadCount(), 0..20, 1, { "$it" }) { count ->
-                    prefs.edit().putInt("preload.$id", count).apply()
-                    attemptedPrefetch.clear()
-                    io.execute { runCatching { library.setPreload(id, count) } }
-                }
-            }
-            divider(downloads)
-            actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download this playlist", "Keep every song available without internet", Palette.TEXT) {
-                store.playlist?.let(::downloadAll)
-            }
-            divider(downloads)
-        }
         actionRow(downloads, Glyph.Kind.TRASH, "Clear downloaded songs", "Scores and unlocks are kept", Palette.RED) {
             AlertDialog.Builder(this)
                 .setTitle("Clear downloaded songs?")
@@ -2059,6 +2142,7 @@ class MainActivity : Activity() {
         when (screen) {
             Screen.GAME -> if (pauseOverlay != null) hidePause() else showPause()
             Screen.HOME -> @Suppress("DEPRECATION") super.onBackPressed()
+            Screen.PLAYLIST -> leavePlaylistSettings()
             Screen.IMPORT -> {
                 operation++
                 cancelImport()
@@ -2084,7 +2168,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         foreground = true
-        if (run != null || screen == Screen.ARCADE) arcadePreparation.start(run?.recent ?: emptyList())
+        if (run != null || screen == Screen.ARCADE) arcadePreparation.start()
         else arcadePreparation.pause()
         scheduleCleanup()
         if (game != null) showPause() else if (screen == Screen.HOME) startPolling()

@@ -14,36 +14,65 @@ class ArcadeBufferTest {
     private fun pool() = (0..7).map { Arcade.Entry("mix", JSONObject().put("id", "song$it")) }
 
     @Test
-    fun nextPicksExploreTheWholeCatalogRatherThanOnlyReadyMusic() {
-        val pool = pool()
-        val selected = (0..30).flatMap { seed -> Arcade.plan(pool, emptyList(), emptySet(), emptySet(), Random(seed)) }
-        assertEquals(pool.map { it.id }.toSet(), selected.map { it.id }.toSet())
-        val initial = Arcade.plan(pool, emptyList(), emptySet(), emptySet(), Random(3))
-        val next = Arcade.plan(pool, initial.map { it.id }, setOf(initial[0].id), emptySet(), Random(4))
-        assertEquals(2, next.size)
-        assertTrue(next.any { it.id == initial[1].id })
-        assertFalse(next.any { it.id == initial[0].id })
+    fun arcadePlaysReachedLevelsAndBorrowsTheNearestLockedOnesWhileThereAreFew() {
+        val pool = (0..11).map { Arcade.Entry("mix", JSONObject().put("id", "song$it")) }
+        // Level 3 is next: 0..2 are cleared, 3 is playable and 4.. are locked.
+        val distance = pool.indices.associate { "song$it" to it - 3 }
+        assertEquals((0 until Arcade.MIN_POOL).map { "song$it" }, Arcade.eligible(pool, distance).map { it.id })
+        val further = pool.indices.associate { "song$it" to it - 8 }
+        assertEquals((0..8).map { "song$it" }, Arcade.eligible(pool, further).map { it.id })
+        val demo = Arcade.Entry("demo", JSONObject().put("id", "demo").put("demo", true))
+        assertFalse(Arcade.eligible(pool + demo, further).any { it.demo })
     }
 
     @Test
-    fun preparesTwoRandomSongsAndRefillsAfterTheCurrentSongUsesOne() {
+    fun keepsThreeFreshSongsReadyAndAddsOneForEverySongPlayed() {
         val pool = pool()
-        val initial = Arcade.prefetch(pool, emptySet(), emptySet(), emptySet(), emptySet(), Random(2))
-        assertEquals(2, initial.size)
-        assertEquals(2, initial.map { it.id }.toSet().size)
-        val ready = initial.map { it.id }.toSet()
-        assertTrue(Arcade.prefetch(pool, ready, emptySet(), emptySet(), emptySet(), Random(3)).isEmpty())
-        val more = Arcade.prefetch(pool, ready, emptySet(), setOf(initial[0].id), emptySet(), Random(4))
-        assertEquals(1, more.size)
-        assertTrue(more[0].id !in ready)
+        val initial = Arcade.prefetch(pool, emptySet(), emptySet(), emptyList(), emptySet(), Random(2))
+        assertEquals(Arcade.BUFFER, initial.size)
+        assertEquals(Arcade.BUFFER, initial.map { it.id }.toSet().size)
+        val ready = initial.map { it.id }.toMutableSet()
+        assertTrue(Arcade.prefetch(pool, ready, emptySet(), emptyList(), emptySet(), Random(3)).isEmpty())
+        val history = mutableListOf<String>()
+        repeat(pool.size - Arcade.BUFFER) {
+            history += ready.first { it !in history }
+            val more = Arcade.prefetch(pool, ready, emptySet(), history, emptySet(), Random(4 + it))
+            assertEquals("after ${history.size} songs", 1, more.size)
+            assertTrue(more[0].id !in ready && more[0].id !in history)
+            ready += more[0].id
+        }
+        // The whole pool is ready, so nothing more is downloaded however much is played.
+        assertEquals(pool.size, ready.size)
+        history += ready.first { it !in history }
+        assertTrue(Arcade.prefetch(pool, ready, emptySet(), history, emptySet(), Random(9)).isEmpty())
+    }
+
+    @Test
+    fun songsArcadeNeverPlayedAreDownloadedFirst() {
+        val pool = pool()
+        val history = (0..4).map { "song$it" }
+        repeat(10) { seed ->
+            val wanted = Arcade.prefetch(pool, emptySet(), emptySet(), history, emptySet(), Random(seed))
+            assertEquals(setOf("song5", "song6", "song7"), wanted.map { it.id }.toSet())
+        }
     }
 
     @Test
     fun pendingRequestsAndFailuresDoNotCauseDuplicateOrInfiniteDownloads() {
-        val wanted = Arcade.prefetch(pool(), setOf("song0"), setOf("song1"), setOf("song0"), setOf("song2"), Random(1))
+        val wanted = Arcade.prefetch(pool(), setOf("song0"), setOf("song1"), emptyList(), setOf("song2"), Random(1))
         assertEquals(1, wanted.size)
         assertTrue(wanted[0].id !in setOf("song0", "song1", "song2"))
-        assertTrue(Arcade.prefetch(pool(), emptySet(), setOf("song0", "song1"), emptySet(), emptySet(), Random(1)).isEmpty())
+        assertTrue(Arcade.prefetch(pool(), emptySet(), setOf("song0", "song1", "song2"), emptyList(), emptySet(), Random(1)).isEmpty())
+    }
+
+    @Test
+    fun picksComeFromTheSongsPlayedLongestAgo() {
+        val pool = pool()
+        val history = listOf("song7", "song6", "song5", "song4", "song3", "song2", "song1", "song0")
+        val picked = (0..40).map { Arcade.pick(pool, emptyList(), Random(it), history)!!.id }.toSet()
+        assertEquals(setOf("song7", "song6", "song5"), picked)
+        val unplayed = (0..40).map { Arcade.pick(pool, emptyList(), Random(it), history.drop(1))!!.id }.toSet()
+        assertTrue("song7" in unplayed)
     }
 
     @Test

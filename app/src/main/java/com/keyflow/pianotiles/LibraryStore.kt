@@ -87,7 +87,7 @@ class LibraryStore(private val context: Context) {
 
     fun preloadCount(collection: JSONObject): Int = prefs.getInt(
         "preload.${collection.optString("id")}", collection.optInt("preloadCount", DEFAULT_PRELOAD),
-    ).coerceIn(0, 20)
+    ).coerceIn(MIN_PRELOAD, 20)
 
     /** A fixed window from the first uncleared level, including songs already cached. */
     fun upcoming(collection: JSONObject): List<JSONObject> {
@@ -97,6 +97,12 @@ class LibraryStore(private val context: Context) {
         return (from until minOf(from + preloadCount(collection), songs.length()))
             .map { songs.getJSONObject(it) }
     }
+
+    /** Smart storage leaves every downloaded song of this playlist alone. */
+    fun keepsDownloads(collection: JSONObject) = prefs.getBoolean("keep.${collection.optString("id")}", false)
+
+    /** The level to play next and the locked one after it, which every playlist keeps ready. */
+    fun essential(collection: JSONObject): List<JSONObject> = upcoming(collection).take(MIN_PRELOAD)
 
     // ---- Player progression, shared across playlists.
 
@@ -134,6 +140,7 @@ class LibraryStore(private val context: Context) {
 
         /** Levels kept prepared ahead of the player's progress. */
         const val DEFAULT_PRELOAD = 5
+        const val MIN_PRELOAD = 2
 
         /** Level n starts at 150·(n−1)² XP. */
         fun level(xp: Int) = 1 + kotlin.math.sqrt(xp / 150.0).toInt()

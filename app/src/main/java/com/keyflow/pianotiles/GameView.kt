@@ -29,6 +29,10 @@ interface GameClock {
     val durationMs: Int
     val isPlaying: Boolean
 
+    /** True once playback can be heard, read after [seconds]. */
+    val audible: Boolean
+        get() = isPlaying
+
     /** True once playback reached the end, even if the reported position falls short of it. */
     val completed: Boolean
         get() = false
@@ -69,6 +73,9 @@ class MediaClock(val player: MediaPlayer) : GameClock {
 
     override val isPlaying
         get() = player.isPlaying
+
+    override val audible
+        get() = steady.running
 
     override fun start(speed: Float) {
         steady.rate = speed.toDouble()
@@ -131,6 +138,54 @@ class SteadyPosition {
 }
 
 /**
+ * Joins the countdown's timeline to the music's. Tiles keep moving while the audio output starts,
+ * then any difference closes by easing their speed, so they never jump or step back.
+ */
+class Handover(private val rate: Double) {
+    private var startedAt = 0L
+    private var gap = Double.NaN
+    private var gapAt = 0L
+    private var closing = 0.0
+
+    /** Ends the handover at once, for a pause, where the jump is not seen. */
+    fun settle() {
+        if (startedAt != 0L) gap = 0.0
+    }
+
+    /** Song time shown minus [audio] at the last [time] call; touches are judged on the same timeline. */
+    var lead = 0.0
+        private set
+
+    fun time(audio: Double, audible: Boolean, countdownEnd: Double, nanos: Long): Double {
+        if (startedAt == 0L) startedAt = nanos
+        val shown = when {
+            gap.isNaN() && !audible -> countdownEnd + (nanos - startedAt) / 1e9 * rate
+            gap.isNaN() -> {
+                val continued = countdownEnd + (nanos - startedAt) / 1e9 * rate
+                // A large difference is a real jump in the song, not output delay.
+                gap = (continued - audio).takeIf { abs(it) < MAX_GAP } ?: 0.0
+                gapAt = nanos
+                // Slow enough that tiles never run slower than half speed or move backwards.
+                closing = maxOf(MIN_CLOSE, 3 * abs(gap) / rate)
+                audio + gap
+            }
+            gap == 0.0 -> audio
+            else -> {
+                val t = ((nanos - gapAt) / 1e9 / closing).coerceIn(0.0, 1.0)
+                audio + gap * (1 - t * t * (3 - 2 * t))
+            }
+        }
+        lead = shown - audio
+        return shown
+    }
+
+    private companion object {
+        const val MAX_GAP = .5
+        const val MIN_CLOSE = .8
+    }
+}
+
+/**
  * The playfield is a perspective highway: tiles appear at a glowing horizon and grow as they
  * approach the strike line. Touch lanes are measured at the strike line, where the field is full
  * width, so the perspective never changes what a tap means.
@@ -180,6 +235,7 @@ class GameView(
     private val density = resources.displayMetrics.density
     // The offset is device latency in real time, so it covers more of the song at higher speeds.
     private val offset = options.offsetMs / 1000.0 * options.speed
+    private val handover = Handover(options.speed.toDouble())
     private val particles = HitParticles()
     private val pauseGlyph = Glyph(Glyph.Kind.PAUSE, Palette.TEXT)
     private val heart = Glyph(Glyph.Kind.HEART, Palette.RED)
@@ -267,6 +323,7 @@ class GameView(
         pointerLanes.clear()
         if (rolling) clock.pause()
         rolling = false
+        handover.settle()
         invalidate()
     }
 
@@ -477,8 +534,8 @@ class GameView(
             clock.start(options.speed)
         }
         val time =
-            if (started) clock.seconds + offset
-            else options.startMs / 1000.0 - (1 - countdown.coerceIn(0f, 1f)) * INTRO_MS / 1000.0
+            if (started) handover.time(clock.seconds + offset, clock.audible, options.startMs / 1000.0, System.nanoTime())
+            else options.startMs / 1000.0 - (1 - countdown.coerceIn(0f, 1f)) * INTRO_MS / 1000.0 * options.speed
         songTime = time
         if (rolling && options.timeLimitMs > 0) {
             if (lastTick > 0) timeLeftMs -= now - lastTick
@@ -1258,7 +1315,7 @@ class GameView(
         val laneWidth = width / 4f
         val lane = (x / laneWidth).toInt().coerceIn(0, 3)
         // Judge the moment the finger landed, not when the batched event reached the view.
-        val time = clock.secondsAt(event.eventTime) + offset
+        val time = clock.secondsAt(event.eventTime) + offset + handover.lead
         var result = 0
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN,

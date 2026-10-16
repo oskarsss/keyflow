@@ -72,4 +72,39 @@ class TimingTest {
         assertEquals(5.5, clock.update(5.5, false, now + 1), 0.0)
         assertFalse(clock.running)
     }
+
+    @Test
+    fun handoverKeepsTilesMovingForwardIntoTheMusic() {
+        val handover = Handover(1.0)
+        val frame = 16_666_667L
+        var now = 1_000_000_000L
+        // The music starts at 30 s but is heard 150 ms later, and the learned offset is -80 ms.
+        var previous = handover.time(30.0 - .08, false, 30.0, now)
+        assertEquals(30.0, previous, 1e-9)
+        var audio = 30.0
+        for (i in 1..120) {
+            now += frame
+            val audible = i > 9
+            if (audible) audio += frame / 1e9
+            val shown = handover.time(audio - .08, audible, 30.0, now)
+            assertTrue("frame $i went backwards", shown > previous)
+            assertTrue("frame $i moved too slowly", shown - previous > .4 * frame / 1e9)
+            assertEquals(shown - (audio - .08), handover.lead, 1e-9)
+            previous = shown
+        }
+        assertEquals(audio - .08, previous, 1e-9)
+        assertEquals(0.0, handover.lead, 1e-9)
+    }
+
+    @Test
+    fun handoverFollowsRealJumpsAndPausesAtOnce() {
+        val jump = Handover(1.0)
+        jump.time(0.0, false, 0.0, 1_000_000_000L)
+        assertEquals(2.0, jump.time(2.0, true, 0.0, 1_016_000_000L), 0.0)
+        val paused = Handover(1.0)
+        paused.time(10.0, false, 10.0, 1_000_000_000L)
+        paused.time(10.0, false, 10.0, 1_100_000_000L)
+        paused.settle()
+        assertEquals(10.0, paused.time(10.0, true, 10.0, 1_200_000_000L), 0.0)
+    }
 }

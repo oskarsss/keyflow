@@ -27,9 +27,9 @@ class StorageManagementTest {
         File(context.filesDir, "songs").deleteRecursively()
     }
 
-    private fun playlist(library: OnDeviceLibrary): JSONObject = library.createPlaylist(
+    private fun playlist(library: OnDeviceLibrary, prefix: String = "songid"): JSONObject = library.createPlaylist(
         JSONObject().put("title", "Mix").put("entries", JSONArray((0..5).map {
-            JSONObject().put("id", "songid%05d".format(it)).put("title", "Song $it")
+            JSONObject().put("id", "$prefix%05d".format(it)).put("title", "Song $it")
         })), Random(4),
     )
 
@@ -49,7 +49,8 @@ class StorageManagementTest {
         for (song in list) { cached(song, 60); song.put("status", "ready") }
         library.save(playlist)
         val stale = list[0]
-        store.prefs.edit().putInt("song.${stale.getString("id")}.score", 900).commit()
+        store.prefs.edit().putInt("song.${stale.getString("id")}.score", 900)
+            .putBoolean("song.${stale.getString("id")}.completed", true).commit()
         library.protectPlayback(list[1].getString("id"))
         store.prefs.edit().putStringSet("arcade.reserve", setOf(list[2].getString("id"))).commit()
         store.markPlayed(list[3], now - day)
@@ -64,7 +65,11 @@ class StorageManagementTest {
         assertEquals(6, saved.length())
         assertEquals("pending", saved.getJSONObject(0).getString("status"))
         library.releasePlayback(list[1].getString("id"))
-        assertEquals(1, library.pruneUnused(30, now))
+        store.prefs.edit().putStringSet("arcade.reserve", emptySet()).commit()
+        // The next level and the locked one after it stay however old they are.
+        assertEquals(0, library.pruneUnused(30, now))
+        assertTrue(store.offline(list[1]))
+        assertTrue(store.offline(list[2]))
     }
 
     @Test
@@ -74,6 +79,7 @@ class StorageManagementTest {
         val second = playlist(library)
         val song = first.getJSONArray("songs").getJSONObject(0)
         cached(song, 40)
+        store.prefs.edit().putBoolean("song.${song.getString("id")}.completed", true).commit()
         store.prefs.edit().putBoolean("smartStorage", false).commit()
         assertEquals(0, library.pruneUnused(30, now))
         assertTrue(store.offline(song))
@@ -82,5 +88,32 @@ class StorageManagementTest {
         assertFalse(store.offline(song))
         assertEquals(6, library.snapshot(first.getString("id"))!!.getJSONArray("songs").length())
         assertEquals(6, library.snapshot(second.getString("id"))!!.getJSONArray("songs").length())
+    }
+
+    @Test
+    fun aPlaylistCanKeepEverySongOrFreeItsOwnDownloads() {
+        val library = OnDeviceLibrary(context)
+        val mine = playlist(library, "mysong")
+        val other = playlist(library, "others")
+        val list = mine.getJSONArray("songs").let { a -> (0 until a.length()).map(a::getJSONObject) }
+        // One song is in both playlists.
+        val shared = other.getJSONArray("songs").getJSONObject(5).put("id", list[5].getString("id"))
+        library.save(other)
+        for (song in list) cached(song, 60)
+        assertEquals(6 to list.sumOf { store.songFile(it, "mp3").length() + store.chartFile(it).length() }, library.usage(list))
+
+        library.setKeepDownloads(mine.getString("id"), true)
+        assertTrue(store.keepsDownloads(mine))
+        assertEquals(0, library.pruneUnused(30, now))
+        library.setKeepDownloads(mine.getString("id"), false)
+
+        // The next level and the locked one after it stay, and so does the shared song.
+        assertEquals(3, library.removeDownloads(mine.getString("id")))
+        assertEquals(listOf(true, true, false, false, false, true), list.map(store::offline))
+        val saved = library.snapshot(mine.getString("id"))!!.getJSONArray("songs")
+        assertEquals("pending", saved.getJSONObject(2).getString("status"))
+        assertEquals(3, library.usage(list).first)
+        assertTrue(library.snapshot(other.getString("id"))!!.getJSONArray("songs").getJSONObject(5).let(store::offline))
+        assertTrue(shared.getString("id") == list[5].getString("id"))
     }
 }

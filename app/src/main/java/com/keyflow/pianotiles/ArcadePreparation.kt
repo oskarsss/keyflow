@@ -8,12 +8,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
-/** Maintains a small random buffer without blocking playback or the mode picker. */
+/**
+ * Keeps a few fresh songs ready for the arcade modes without blocking playback or the mode
+ * picker, and remembers what Arcade played so the songs played longest ago come back first.
+ */
 class ArcadePreparation internal constructor(
     context: Context,
     private val online: (Context) -> Boolean = { connected(it) },
-    private val request: (Context, Arcade.Entry) -> Unit = { c, entry ->
-        DownloadService.start(c, entry.playlistId, entry.id, background = true)
+    private val request: (Context, Arcade.Entry, Boolean) -> Unit = { c, entry, idle ->
+        DownloadService.start(c, entry.playlistId, entry.id, background = true, idle = idle)
     },
 ) {
     private val context = context.applicationContext
@@ -23,38 +26,64 @@ class ArcadePreparation internal constructor(
         Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "arcade-preparation")
     }
     @Volatile private var enabled = false
-    @Volatile private var excluded = emptySet<String>()
-    @Volatile private var plannedIds = store.prefs.getStringSet("arcade.upcoming", emptySet()).orEmpty().toList()
     // Accessed exclusively on the preparation thread.
     private val pending = mutableMapOf<String, Long>()
     private val failures = mutableMapOf<String, Long>()
     private var generation = library.cacheGeneration
 
     init {
-        worker.scheduleWithFixedDelay({ if (enabled) runCatching { replenish() } }, 0, 10, TimeUnit.SECONDS)
+        worker.scheduleWithFixedDelay({ if (enabled) runCatching { replenish(idle = false) } }, 0, 10, TimeUnit.SECONDS)
     }
 
-    fun start(exclude: Collection<String> = emptyList()) {
-        excluded = exclude.toSet()
+    /** Keeps the buffer full while the player is in Arcade. */
+    fun start() {
         enabled = true
-        worker.execute { if (enabled) runCatching { replenish() } }
+        worker.execute { if (enabled) runCatching { replenish(idle = false) } }
+    }
+
+    /**
+     * Fills the buffer once from the home screen, after the Journey's own downloads, so the first
+     * run already has fresh songs.
+     */
+    fun prepareSoon() {
+        worker.schedule({ runCatching { replenish(idle = true) } }, HOME_DELAY_S, TimeUnit.SECONDS)
     }
 
     fun pause() { enabled = false }
     fun close() { enabled = false; worker.shutdownNow() }
 
     fun pick(ready: List<Arcade.Entry>, recent: Collection<String>, random: Random): Arcade.Entry? {
-        val planned = plannedIds
-        val next = ready.filter { it.id in planned && it.id !in recent }
-        return Arcade.pick(next.ifEmpty { ready }, recent, random)
+        val allowed = eligible(library.arcadeSongs()).map { it.id }.toSet()
+        // Locked levels are only played when nothing else, not even a built-in song, is ready.
+        val choices = ready.filter { it.id in allowed }.ifEmpty { ready.filter { it.demo } }.ifEmpty { ready }
+        return Arcade.pick(choices, recent, random, history())
     }
 
-    private fun replenish() {
+    /** Remembers a song Arcade is about to play. */
+    fun played(id: String) = synchronized(this) {
+        val history = (history().filter { it != id } + id).takeLast(Arcade.HISTORY)
+        store.prefs.edit().putString(HISTORY_KEY, history.joinToString(",")).apply()
+    }
+
+    fun history(): List<String> =
+        store.prefs.getString(HISTORY_KEY, "").orEmpty().split(',').filter { it.isNotBlank() }
+
+    /** How far past each playlist's next level a song is; a song in several playlists takes the nearest. */
+    private fun eligible(pool: List<Arcade.Entry>): List<Arcade.Entry> {
+        val distance = HashMap<String, Int>()
+        for (playlist in library.savedPlaylists()) {
+            val songs = playlist.getJSONArray("songs")
+            val next = (0 until songs.length()).firstOrNull { !store.completed(songs.getJSONObject(it)) } ?: songs.length()
+            for (i in 0 until songs.length()) distance.merge(songs.getJSONObject(i).optString("id"), i - next, ::minOf)
+        }
+        return Arcade.eligible(pool, distance)
+    }
+
+    private fun replenish(idle: Boolean) {
         if (generation != library.cacheGeneration) {
             generation = library.cacheGeneration
             pending.clear()
             failures.clear()
-            plannedIds = emptyList()
         }
         val pool = library.arcadeSongs()
         val ready = pool.filter { store.offline(it.song) }.map { it.id }.toSet()
@@ -70,28 +99,32 @@ class ArcadePreparation internal constructor(
             }
         }
         failures.entries.removeAll { now - it.value > 300_000 }
-        val connected = online(context)
-        val plan = if (connected) Arcade.plan(pool, plannedIds, excluded, failures.keys, Random.Default)
-            else pool.filter { it.id in plannedIds && it.id !in excluded }
-        plannedIds = plan.map { it.id }
-        store.prefs.edit().putStringSet("arcade.upcoming", plannedIds.toSet()).apply()
-        val reserve = ready.filter { it !in excluded }.shuffled().take(Arcade.READY_TARGET).toMutableSet()
-        reserve.addAll(plannedIds)
+        val eligible = eligible(pool)
+        val history = history()
+        val stale = Arcade.stale(eligible.size, history)
+        // Cleanup keeps the songs a run will reach for first.
+        val lastPlayed = history.withIndex().associate { it.value to it.index }
+        val reserve = eligible.filter { it.id in ready && it.id !in stale }.sortedBy { lastPlayed[it.id] ?: -1 }
+            .take(Arcade.BUFFER).map { it.id }.toMutableSet()
         reserve.addAll(pending.keys)
         store.prefs.edit().putStringSet("arcade.reserve", reserve).apply()
-        if (!connected) return
-        val wanted = Arcade.prefetch(plan, ready, pending.keys, excluded, failures.keys, Random.Default)
+        if (!online(context)) return
+        val wanted = Arcade.prefetch(eligible, ready, pending.keys, history, failures.keys, Random.Default)
+        if (wanted.isEmpty()) return
         // Protect a re-charted older audio file before a queued cleanup can acquire the cache lock.
         reserve.addAll(wanted.map { it.id })
         store.prefs.edit().putStringSet("arcade.reserve", reserve).apply()
         for (entry in wanted) {
-            if (!enabled) break
-            request(context, entry)
+            if (!idle && !enabled) break
+            request(context, entry, idle)
             pending[entry.id] = now
         }
     }
 
     companion object {
+        private const val HISTORY_KEY = "arcade.history"
+        private const val HOME_DELAY_S = 5L
+
         fun connected(context: Context): Boolean {
             val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
             val network = manager.activeNetwork ?: return false

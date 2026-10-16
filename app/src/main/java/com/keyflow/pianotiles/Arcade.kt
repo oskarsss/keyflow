@@ -15,27 +15,45 @@ object Arcade {
 
     const val SEGMENT_MS = 45_000
 
-    /** Songs that should be playable offline before a run starts. */
-    const val READY_TARGET = 2
+    /** Fresh songs kept ready ahead of a run, so the next song never waits for a download. */
+    const val BUFFER = 3
 
-    /** Retain the next picks, then draw from the whole catalog, including music not yet saved. */
-    fun plan(pool: List<Entry>, previous: List<String>, excluded: Set<String>, retryLater: Set<String>, random: Random): List<Entry> {
-        val eligible = pool.filter { !it.demo && it.id !in excluded && it.id !in retryLater }.distinctBy { it.id }
-        val byId = eligible.associateBy { it.id }
-        val kept = previous.distinct().mapNotNull { byId[it] }.take(READY_TARGET)
-        return kept + eligible.filter { entry -> kept.none { it.id == entry.id } }.shuffled(random)
-            .take(READY_TARGET - kept.size)
+    /** Arcade plays remembered, so the songs played longest ago come back first. */
+    const val HISTORY = 40
+
+    /** Until this many Journey levels are reached, Arcade borrows the nearest locked ones. */
+    const val MIN_POOL = 6
+
+    /**
+     * Songs Arcade may play: Journey levels already reached, so locked levels are not given away.
+     * [distance] is how far past the player's next level a song is; zero or less means reached.
+     */
+    fun eligible(pool: List<Entry>, distance: Map<String, Int>): List<Entry> {
+        val imported = pool.filter { !it.demo }.distinctBy { it.id }
+        val reached = imported.filter { (distance[it.id] ?: Int.MAX_VALUE) <= 0 }
+        return if (reached.size >= MIN_POOL) reached
+            else imported.sortedBy { distance[it.id] ?: Int.MAX_VALUE }.take(MIN_POOL)
     }
 
-    /** Fill the upcoming buffer, counting pending work, without choosing the current/recent songs. */
+    /** Songs played too recently to count as fresh, leaving room for [BUFFER] others. */
+    fun stale(eligible: Int, history: List<String>): Set<String> =
+        history.takeLast((eligible - BUFFER).coerceIn(0, HISTORY)).toSet()
+
+    /**
+     * New downloads that bring the fresh, ready songs back up to [BUFFER]. Each song played goes
+     * stale, so every song played adds one new song until the whole pool is ready. Songs Arcade
+     * has never played come first.
+     */
     fun prefetch(
-        pool: List<Entry>, ready: Set<String>, pending: Set<String>, excluded: Set<String>,
+        eligible: List<Entry>, ready: Set<String>, pending: Set<String>, history: List<String>,
         retryLater: Set<String>, random: Random,
     ): List<Entry> {
-        val eligible = pool.filter { !it.demo && it.id !in excluded }.distinctBy { it.id }
-        val available = eligible.count { it.id in ready || it.id in pending }
+        val stale = stale(eligible.size, history)
+        val fresh = eligible.count { (it.id in ready || it.id in pending) && it.id !in stale }
+        val played = history.toSet()
         return eligible.filter { it.id !in ready && it.id !in pending && it.id !in retryLater }
-            .shuffled(random).take(maxOf(0, READY_TARGET - available))
+            .shuffled(random).sortedBy { it.id in played }
+            .take(maxOf(0, BUFFER - fresh))
     }
 
     class Entry(val playlistId: String, val song: JSONObject) {
@@ -115,12 +133,19 @@ object Arcade {
         return notes.filter { it.time >= from && it.time + it.duration <= to }
     }
 
-    /** A random song, avoiding the last few, preferring imported music over built-in songs. */
-    fun pick(ready: List<Entry>, recent: Collection<String>, random: Random): Entry? {
+    /**
+     * A random song among the few Arcade played longest ago, avoiding the run's last few and
+     * preferring imported music over built-in songs.
+     */
+    fun pick(ready: List<Entry>, recent: Collection<String>, random: Random, history: List<String> = emptyList()): Entry? {
         if (ready.isEmpty()) return null
         val imported = ready.filter { !it.demo }
         val pool = imported.ifEmpty { ready }
         val fresh = pool.filter { it.id !in recent }.ifEmpty { pool }
-        return fresh[random.nextInt(fresh.size)]
+        val lastPlayed = history.withIndex().associate { it.value to it.index }
+        val oldest = fresh.shuffled(random).sortedBy { lastPlayed[it.id] ?: -1 }
+        return oldest[random.nextInt(minOf(CHOICES, oldest.size))]
     }
+
+    private const val CHOICES = 3
 }

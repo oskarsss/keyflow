@@ -67,11 +67,12 @@ class DownloadService : Service() {
         if (playlist == null) return
         val selected = intent.getStringExtra("songId")
         val rank = when {
-            selected == null -> 0
+            selected == null || intent.getBooleanExtra("idle", false) -> 0
             intent.getBooleanExtra("background", false) -> 1
             else -> 2
         }
         val all = intent.getBooleanExtra("all", false)
+        val essential = intent.getBooleanExtra("essential", false)
         val songs = playlist.getJSONArray("songs")
         val byId = (0 until songs.length()).map { songs.getJSONObject(it) }.associateBy { it.getString("id") }
         val fromNext = (0 until songs.length()).map { songs.getJSONObject(it) }.let { order ->
@@ -83,6 +84,8 @@ class DownloadService : Service() {
                 selected != null -> listOf(selected)
                 // The whole playlist, starting from the next level to play.
                 all -> fromNext.map { it.getString("id") }
+                // Only the next level and the locked one after it.
+                essential -> store.essential(playlist).map { it.getString("id") }
                 // The next levels, then every downloaded song whose chart is from an older generator.
                 else -> (store.upcoming(playlist) + fromNext.filter(::rechart)).map { it.getString("id") }.distinct()
             }
@@ -202,11 +205,16 @@ class DownloadService : Service() {
         /** Queue rank of a song the player opened and is waiting for. */
         private const val WAITING = 2
 
-        fun start(context: Context, playlistId: String, songId: String? = null, all: Boolean = false, background: Boolean = false) {
+        fun start(
+            context: Context, playlistId: String, songId: String? = null, all: Boolean = false,
+            background: Boolean = false, essential: Boolean = false, idle: Boolean = false,
+        ) {
             context.startForegroundService(
                 Intent(context, DownloadService::class.java)
                     .putExtra("playlistId", playlistId)
                     .putExtra("all", all)
+                    .putExtra("essential", essential)
+                    .putExtra("idle", idle)
                     .putExtra("background", background)
                     .apply { if (songId != null) putExtra("songId", songId) },
             )

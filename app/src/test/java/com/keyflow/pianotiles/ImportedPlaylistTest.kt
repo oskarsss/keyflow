@@ -148,8 +148,10 @@ class ImportedPlaylistTest {
         store.songFile(cached, "mp3").writeText("audio")
         store.chartFile(cached).writeText("{}")
         assertEquals(ids(playlist).subList(2, 4), store.upcoming(playlist).map { it.getString("id") })
+        // The next level and the locked one after it are always kept, whatever the setting.
         library.setPreload(playlist.getString("id"), 0)
-        assertTrue(store.upcoming(playlist).isEmpty())
+        assertEquals(ids(playlist).subList(2, 4), store.upcoming(playlist).map { it.getString("id") })
+        assertEquals(ids(playlist).subList(2, 4), store.essential(playlist).map { it.getString("id") })
         library.setPreload(playlist.getString("id"), 20)
         assertEquals(6, store.upcoming(playlist).size)
         val edit = store.prefs.edit()

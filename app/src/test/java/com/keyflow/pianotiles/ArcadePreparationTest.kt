@@ -33,17 +33,20 @@ class ArcadePreparationTest {
         File(context.filesDir, "playlists").deleteRecursively()
         File(context.filesDir, "songs").deleteRecursively()
         val library = OnDeviceLibrary.get(context)
-        library.createPlaylist(JSONObject().put("title", "Buffer test").put("entries", JSONArray((0..7).map {
+        val playlist = library.createPlaylist(JSONObject().put("title", "Buffer test").put("entries", JSONArray((0..7).map {
             JSONObject().put("id", "songid%05d".format(it)).put("title", "Song $it")
         })), Random(1))
         val connected = AtomicBoolean(true)
         val checks = AtomicInteger()
         val requests = ConcurrentLinkedQueue<Arcade.Entry>()
-        val preparation = ArcadePreparation(context, { checks.incrementAndGet(); connected.get() }, { _, song -> requests.add(song); Unit })
+        val preparation = ArcadePreparation(context, { checks.incrementAndGet(); connected.get() }, { _, song, _ -> requests.add(song); Unit })
+        // Nothing is cleared yet, so Arcade borrows the first levels and never the far locked ones.
+        val nearest = (0 until Arcade.MIN_POOL).map { playlist.getJSONArray("songs").getJSONObject(it).getString("id") }.toSet()
         try {
             preparation.start()
-            await { requests.size == 2 }
+            await { requests.size == Arcade.BUFFER }
             val first = requests.toList()
+            assertTrue(first.all { it.id in nearest })
             val queued = library.snapshot(first[0].playlistId)!!
             val queuedSongs = queued.getJSONArray("songs")
             for (i in 0 until queuedSongs.length()) {
@@ -54,14 +57,16 @@ class ArcadePreparationTest {
             val before = checks.get()
             preparation.start()
             await { checks.get() > before }
-            assertEquals(2, requests.size)
+            assertEquals(Arcade.BUFFER, requests.size)
             for (entry in first) {
                 store.songFile(entry.song, "mp3").writeText("audio")
                 store.chartFile(entry.song).writeText("{}")
             }
-            preparation.start(listOf(first[0].id))
-            await { requests.size == 3 }
-            assertEquals(3, requests.map { it.id }.toSet().size)
+            // Playing a song makes room for one new song.
+            preparation.played(first[0].id)
+            preparation.start()
+            await { requests.size == Arcade.BUFFER + 1 }
+            assertEquals(Arcade.BUFFER + 1, requests.map { it.id }.toSet().size)
             val failed = requests.toList().last()
             val failedPlaylist = library.snapshot(failed.playlistId)!!
             val failedSongs = failedPlaylist.getJSONArray("songs")
@@ -70,18 +75,21 @@ class ArcadePreparationTest {
                     failedSongs.getJSONObject(i).put("status", "error").put("failedAt", System.currentTimeMillis() + 1000)
             }
             library.save(failedPlaylist)
-            preparation.start(listOf(first[0].id))
-            await { requests.size == 4 }
-            assertEquals(4, requests.map { it.id }.toSet().size)
+            preparation.start()
+            await { requests.size == Arcade.BUFFER + 2 }
+            assertEquals(Arcade.BUFFER + 2, requests.map { it.id }.toSet().size)
+            assertTrue(requests.all { it.id in nearest })
             connected.set(false)
             val offlineCheck = checks.get()
-            preparation.start(first.map { it.id })
+            preparation.start()
             await { checks.get() > offlineCheck }
-            assertEquals(4, requests.size)
+            assertEquals(Arcade.BUFFER + 2, requests.size)
             library.clearDownloads()
             connected.set(true)
             preparation.start()
-            await { requests.size == 6 }
+            await { requests.size == 2 * Arcade.BUFFER + 2 }
+            assertEquals(listOf(first[0].id), preparation.history())
+            assertTrue(requests.toList().takeLast(Arcade.BUFFER).none { it.id == first[0].id })
         } finally { preparation.close() }
     }
 }
