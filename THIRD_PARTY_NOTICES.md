@@ -55,12 +55,32 @@ provenance, frontend contract, byte count and SHA-256 are recorded in `assets/rh
 ONNX Runtime Android **1.31.0** executes the model locally, on its CPU provider. It is MIT-licensed;
 [corresponding source](https://github.com/microsoft/onnxruntime/tree/v1.31.0), license and bundled
 third-party notices are included in `assets/rhythm/`. The Kotlin Slaney-mel frontend and minimal
-postprocessor follow the published Beat This! contract; musical phrase selection, temporal-median
-sustain checks and two-thumb choreography are original project code.
+postprocessor follow the published Beat This! contract; legacy musical phrase selection, temporal-median
+sustain checks and two-thumb safety choreography are original project code.
 
 GTZAN-mini audio and beat annotations are used only as external development evaluation inputs.
 Those audio recordings and the six user-requested evaluation songs are **not** shipped in APKs,
 source archives or repository assets. Only numeric measurement results are committed.
+
+## Mapperatorinator human-trained chart model — MIT
+
+The APK includes the mania (`gamemode=3`) checkpoint of
+[OliBomby/Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini),
+revision `7807f0dc70cab671be012e1f5ddf945b0b8b7278`. Upstream source and pretrained weights are
+MIT-licensed. Copyright OliBomby and contributors; the full license is included in
+`assets/chart/Mapperatorinator-LICENSE.txt`.
+
+The conversion follows [Mapperatorinator source](https://github.com/OliBomby/Mapperatorinator/tree/0e2b0e387aab4b35c64b0b11b12d47578dea7587)
+at revision `0e2b0e387aab4b35c64b0b11b12d47578dea7587`. Keyflow's portable attention implementation,
+ONNX conversion and Kotlin frontend/tokenizer adapter preserve the published model's contracts,
+with explicit cached decoding and a four-key/two-thumb gameplay gate. These are adapted pretrained
+weights; no new Keyflow training or fine-tuning is claimed. The upstream model was trained on
+community-created osu! maps; no training dataset or its music is shipped with Keyflow.
+
+`assets/chart/model.json` records checkpoint provenance, export versions, frontend and file hashes.
+`tools/prepare_chart_model.py --check` verifies the committed graphs and vocabulary. The existing
+MIT-licensed ONNX Runtime Android executes these graphs too. See [chart-learning notes](docs/chart-learning.md)
+for reproducible conversion, measurements and limitations.
 
 ## MIT license — piano-falling-tiles
 

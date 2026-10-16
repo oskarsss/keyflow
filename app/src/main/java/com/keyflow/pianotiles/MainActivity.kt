@@ -757,6 +757,7 @@ class MainActivity : Activity() {
         val progress = song.optString("progress")
         val percent = Regex("([0-9.]+)%").find(progress)?.groupValues?.get(1)?.toFloatOrNull()
         return when {
+            song.has("chartProgress") -> .8f + song.optInt("chartProgress", 0).coerceIn(0, 100) / 100f * .19f
             percent != null -> percent / 100f * .8f
             progress.contains("MP3") -> .85f
             progress.contains("beat") || progress.contains("chart") -> .93f
@@ -769,6 +770,7 @@ class MainActivity : Activity() {
         val percent = Regex("([0-9]+)(?:\\.[0-9]+)?%").find(progress)?.groupValues?.get(1)
         return when {
             song.optString("status") != "caching" -> "Getting music ready…"
+            song.has("chartProgress") -> "Preparing level · ${song.optInt("chartProgress", 0)}%"
             percent != null -> "Preparing music · $percent%"
             progress.contains("MP3") -> "Preparing audio…"
             progress.contains("beat") || progress.contains("chart") -> "Matching tiles to the beat"
@@ -1611,12 +1613,7 @@ class MainActivity : Activity() {
             runCatching {
                 val chart = store.chart(song)
                 val excerpt = if (r == null && stage == null && store.prefs.getBoolean("shortLevels", true)) {
-                    val sections = chart.optJSONArray("sections")?.let { values -> (0 until values.length()).map { i ->
-                        val section = values.getJSONObject(i)
-                        AudioChart.Section(section.getDouble("start"), section.getDouble("end"), section.getInt("family"), section.getDouble("intensity"))
-                    } }.orEmpty()
-                    val downbeats = chart.optJSONArray("downbeats")?.let { values -> (0 until values.length()).map { values.getDouble(it) } }.orEmpty()
-                    LevelExcerpt.choose(chart.optDouble("duration", 0.0), sections, downbeats)
+                    PreparedChart.highlight(chart)
                 } else null
                 val playStage = stage ?: excerpt?.let { Stage((it.start * 1000).toInt(), (it.end * 1000).toInt()) }
                 val raw = chart.getJSONArray("notes")

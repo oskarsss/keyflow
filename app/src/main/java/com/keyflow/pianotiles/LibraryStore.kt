@@ -130,7 +130,7 @@ class LibraryStore(private val context: Context) {
     }
 
     companion object {
-        const val CHART_VERSION = 5
+        const val CHART_VERSION = 6
 
         /** Level n starts at 150·(n−1)² XP. */
         fun level(xp: Int) = 1 + kotlin.math.sqrt(xp / 150.0).toInt()

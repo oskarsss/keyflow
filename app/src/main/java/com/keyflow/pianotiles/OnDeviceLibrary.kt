@@ -32,6 +32,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 else if (song.optString("status") in listOf("ready", "caching", "queued")) {
                     song.put("status", "pending")
                     song.remove("progress")
+                    song.remove("chartProgress")
                 }
             }
             save(playlist)
@@ -285,7 +286,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             }
             progress("Finding the rhythm in $title…")
             val chart = try {
-                writeChart(song, downloaded, songId)
+                writeChart(song, downloaded, songId) { percent ->
+                    updateSong(playlistId, songId) { it.put("chartProgress", percent).put("progress", "Preparing the level…") }
+                }
             } catch (error: Throwable) {
                 updateSong(playlistId, songId) {
                     it.put("status", "error").put("failedAt", System.currentTimeMillis())
@@ -298,6 +301,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     .put("duration", chart.duration)
                     .put("chartMethod", chart.method)
                     .put("progress", "Offline ready")
+                    .remove("chartProgress")
             }
             return
         }
@@ -354,7 +358,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             updateSong(playlistId, songId) {
                 it.put("progress", "Matching tiles to the beat…")
             }
-            val chart = writeChart(song, audio, songId)
+            val chart = writeChart(song, audio, songId) { percent ->
+                updateSong(playlistId, songId) { it.put("chartProgress", percent).put("progress", "Preparing the level…") }
+            }
             val metadata = JSONObject(File(folder, "source.info.json").readText())
             Files.move(
                 audio.toPath(),
@@ -388,6 +394,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                             metadata.optString("uploader", song.optString("artist"))
                         },
                     )
+                value.remove("chartProgress")
             }
             folder.deleteRecursively()
         } catch (error: Throwable) {
@@ -401,43 +408,22 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
     }
 
-    private fun writeChart(song: JSONObject, audio: File, songId: String): AudioChart.Chart {
-        val samples = runtime.audioSamples(audio, "chart-$songId", AudioChart::readPcm)
+    private fun writeChart(song: JSONObject, audio: File, songId: String, progress: (Int) -> Unit): AudioChart.Chart {
+        progress(0)
         val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
         val rhythm = BeatThis(context).analyze(features)
-        val chart = if (rhythm.beats.size >= 4) MusicalChart.generate(samples, features, rhythm, songId)
-            else AudioChart.generate(samples, songId).let { fallback ->
-                check(fallback.method == "onsets") { "This song has no clear rhythm to create a level. Try another song." }
-                fallback.copy(notes = ThumbChart.makePlayable(fallback.notes))
+        check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
+        val temporary = File.createTempFile("chart-audio-", ".pcm", context.cacheDir)
+        val learned = try {
+            runtime.audioSamples(audio, "chart-model-$songId", ChartAudio.RATE) { ChartAudio.readPcm(it, temporary) }.use {
+                ManiaChartModel(context).analyze(it, rhythm, progress)
             }
-        check(chart.notes.isNotEmpty()) { "This song has no playable musical attacks. Try another song." }
-        val notes = JSONArray()
-        for (note in chart.notes) notes.put(
-            JSONObject()
-                .put("time", note.time)
-                .put("lane", note.lane)
-                .put("kind", note.kind)
-                .put("duration", note.duration)
-                .put("endLane", note.endLane),
-        )
+        } finally { temporary.delete() }
+        val chart = ChartStructure.describe(features, rhythm, learned)
         val chartFile = store.chartFile(song)
         File(chartFile.path + ".part")
             .apply {
-                writeText(
-                    JSONObject()
-                        .put("version", LibraryStore.CHART_VERSION)
-                        .put("duration", chart.duration)
-                        .put("method", chart.method)
-                        .put("beats", JSONArray(chart.beats))
-                        .put("barPhase", chart.barPhase)
-                        .put("bpm", chart.bpm)
-                        .put("downbeats", JSONArray(chart.downbeats))
-                        .put("sections", JSONArray(chart.sections.map { section -> JSONObject()
-                            .put("start", section.start).put("end", section.end)
-                            .put("family", section.family).put("intensity", section.intensity) }))
-                        .put("notes", notes)
-                        .toString(),
-                )
+                writeText(PreparedChart.encode(chart).toString())
             }
             .let { Files.move(it.toPath(), chartFile.toPath(), StandardCopyOption.REPLACE_EXISTING) }
         store.songFile(song, "json").delete()

@@ -1,0 +1,48 @@
+{
+  "model": "OliBomby/Mapperatorinator-v32-mini",
+  "revision": "7807f0dc70cab671be012e1f5ddf945b0b8b7278",
+  "subfolder": "gamemode=3",
+  "upstream": "https://github.com/OliBomby/Mapperatorinator",
+  "upstream_revision": "0e2b0e387aab4b35c64b0b11b12d47578dea7587",
+  "license": "MIT",
+  "parameters": 55706112,
+  "checkpoint_sha256": "36981186d220bf09a9dec7eb279c0aa0981552eb6fd526fed86faaa51ea20459",
+  "export_versions": {
+    "torch": "2.10.0+cpu",
+    "torchaudio": "2.10.0+cpu",
+    "transformers": "4.57.3",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.0"
+  },
+  "frontend": {
+    "rate": 16000,
+    "fft": 1024,
+    "hop": 128,
+    "frames": 2048,
+    "bins": 128,
+    "mel": "htk",
+    "f_min": 20,
+    "f_max": 8000,
+    "power": 2,
+    "transform": "log1p",
+    "normalize": "whole-song peak"
+  },
+  "parity": {
+    "encoder_max_abs": 1.862645149230957e-06,
+    "decoder_max_abs": 7.82012939453125e-05
+  },
+  "files": {
+    "chart-encoder-int8.onnx": {
+      "bytes": 26919753,
+      "sha256": "cd9b431541d36562b2e9c1b1b1dd46b1357a93b8d1b705f02c75ea7e12406c08"
+    },
+    "chart-decoder-int8.onnx": {
+      "bytes": 51597156,
+      "sha256": "7ce4dfe964e245ca72c5c1f48f6d6d2e769b635626d78fef93d6a1f159ddd6d2"
+    },
+    "tokenizer.json": {
+      "bytes": 15162,
+      "sha256": "810fbb987950992b7376470b8d4a4da8ef408a427500422b935a27bac60f5c8c"
+    }
+  }
+}

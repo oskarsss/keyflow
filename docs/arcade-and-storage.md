@@ -6,6 +6,9 @@ replaces it after play or failure, and prefers a prepared upcoming pick at the n
 Cached imported songs remain the fallback when preparation is slow or the connection is lost;
 a single available song can repeat. Built-in songs cover an empty library.
 
+Preparation includes the complete learned tile chart and precomputed journey highlight; audio
+alone is not considered ready. Inference runs in the background queue, never at level startup.
+
 Preparation starts on the arcade picker and continues during a run. Explicitly selected songs
 take queue priority, followed by upcoming arcade songs, then bulk and journey preparation.
 Requests are deduplicated, failures back off for five minutes, and clearing downloads invalidates

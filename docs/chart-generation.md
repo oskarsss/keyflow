@@ -1,4 +1,8 @@
-# Musical chart generation, version 5
+# Musical clock evaluation and the previous version 5 planner
+
+**Current production uses [human-chart-trained generation, version 6](chart-learning.md).**
+The beat-detector evaluation below still applies to its conditioning clock. The phrase planner,
+song chart counts and fallback behavior documented here describe the previous version 5 baseline.
 
 The earlier generator selected independent SuperFlux peaks and ranked bars by energy. That could
 produce plausible timestamps without a coherent playable rhythm: a vocal consonant or guitar

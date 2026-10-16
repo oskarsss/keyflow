@@ -1,0 +1,729 @@
+{
+  "offset": 9,
+  "context_sos": {
+    "timing": 3,
+    "map": 5,
+    "sv": 7
+  },
+  "context_eos": {
+    "timing": 4,
+    "map": 6,
+    "sv": 8
+  },
+  "event_ranges": [
+    {
+      "type": "t",
+      "min_value": 0,
+      "max_value": 1637
+    },
+    {
+      "type": "snap",
+      "min_value": 0,
+      "max_value": 16
+    },
+    {
+      "type": "pos",
+      "min_value": 0,
+      "max_value": 956
+    },
+    {
+      "type": "pos_refine",
+      "min_value": 0,
+      "max_value": 255
+    },
+    {
+      "type": "column",
+      "min_value": 0,
+      "max_value": 17
+    },
+    {
+      "type": "scroll_speed",
+      "min_value": 0,
+      "max_value": 1000
+    },
+    {
+      "type": "new_combo",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "hitsound",
+      "min_value": 0,
+      "max_value": 72
+    },
+    {
+      "type": "volume",
+      "min_value": 0,
+      "max_value": 100
+    },
+    {
+      "type": "circle",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "spinner",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "spinner_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "slider_head",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "bezier_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "perfect_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "catmull_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "red_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "last_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "slider_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "beat",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "measure",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "timing_point",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "slider_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "slider_repeat_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "spinner_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "hold_note",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "hold_note_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "scroll_speed_change",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "hold_note_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "drumroll",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "drumroll_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "denden",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "denden_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "drumroll_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    {
+      "type": "denden_sustain",
+      "min_value": 0,
+      "max_value": 0
+    }
+  ],
+  "input_event_ranges": [
+    {
+      "type": "gamemode",
+      "min_value": 0,
+      "max_value": 3
+    },
+    {
+      "type": "difficulty",
+      "min_value": 0,
+      "max_value": 24
+    },
+    {
+      "type": "mapper",
+      "min_value": 0,
+      "max_value": 7605
+    },
+    {
+      "type": "cs",
+      "min_value": 0,
+      "max_value": 21
+    },
+    {
+      "type": "year",
+      "min_value": 2007,
+      "max_value": 2077
+    },
+    {
+      "type": "hitsounded",
+      "min_value": 0,
+      "max_value": 1
+    },
+    {
+      "type": "song_length",
+      "min_value": 0,
+      "max_value": 60
+    },
+    {
+      "type": "song_position",
+      "min_value": -1,
+      "max_value": 101
+    },
+    {
+      "type": "descriptor",
+      "min_value": 0,
+      "max_value": 146
+    },
+    {
+      "type": "keycount",
+      "min_value": 1,
+      "max_value": 18
+    },
+    {
+      "type": "hold_note_ratio",
+      "min_value": -1,
+      "max_value": 12
+    },
+    {
+      "type": "scroll_speed_ratio",
+      "min_value": -1,
+      "max_value": 12
+    },
+    {
+      "type": "global_sv",
+      "min_value": 40,
+      "max_value": 360
+    }
+  ],
+  "event_range": {
+    "t": {
+      "type": "t",
+      "min_value": 0,
+      "max_value": 1637
+    },
+    "snap": {
+      "type": "snap",
+      "min_value": 0,
+      "max_value": 16
+    },
+    "pos": {
+      "type": "pos",
+      "min_value": 0,
+      "max_value": 956
+    },
+    "pos_refine": {
+      "type": "pos_refine",
+      "min_value": 0,
+      "max_value": 255
+    },
+    "column": {
+      "type": "column",
+      "min_value": 0,
+      "max_value": 17
+    },
+    "scroll_speed": {
+      "type": "scroll_speed",
+      "min_value": 0,
+      "max_value": 1000
+    },
+    "new_combo": {
+      "type": "new_combo",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "hitsound": {
+      "type": "hitsound",
+      "min_value": 0,
+      "max_value": 72
+    },
+    "volume": {
+      "type": "volume",
+      "min_value": 0,
+      "max_value": 100
+    },
+    "circle": {
+      "type": "circle",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "spinner": {
+      "type": "spinner",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "spinner_end": {
+      "type": "spinner_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "slider_head": {
+      "type": "slider_head",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "bezier_anchor": {
+      "type": "bezier_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "perfect_anchor": {
+      "type": "perfect_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "catmull_anchor": {
+      "type": "catmull_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "red_anchor": {
+      "type": "red_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "last_anchor": {
+      "type": "last_anchor",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "slider_end": {
+      "type": "slider_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "beat": {
+      "type": "beat",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "measure": {
+      "type": "measure",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "timing_point": {
+      "type": "timing_point",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "slider_sustain": {
+      "type": "slider_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "slider_repeat_sustain": {
+      "type": "slider_repeat_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "spinner_sustain": {
+      "type": "spinner_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "hold_note": {
+      "type": "hold_note",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "hold_note_end": {
+      "type": "hold_note_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "scroll_speed_change": {
+      "type": "scroll_speed_change",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "hold_note_sustain": {
+      "type": "hold_note_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "drumroll": {
+      "type": "drumroll",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "drumroll_end": {
+      "type": "drumroll_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "denden": {
+      "type": "denden",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "denden_end": {
+      "type": "denden_end",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "drumroll_sustain": {
+      "type": "drumroll_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "denden_sustain": {
+      "type": "denden_sustain",
+      "min_value": 0,
+      "max_value": 0
+    },
+    "gamemode": {
+      "type": "gamemode",
+      "min_value": 0,
+      "max_value": 3
+    },
+    "difficulty": {
+      "type": "difficulty",
+      "min_value": 0,
+      "max_value": 24
+    },
+    "mapper": {
+      "type": "mapper",
+      "min_value": 0,
+      "max_value": 7605
+    },
+    "cs": {
+      "type": "cs",
+      "min_value": 0,
+      "max_value": 21
+    },
+    "year": {
+      "type": "year",
+      "min_value": 2007,
+      "max_value": 2077
+    },
+    "hitsounded": {
+      "type": "hitsounded",
+      "min_value": 0,
+      "max_value": 1
+    },
+    "song_length": {
+      "type": "song_length",
+      "min_value": 0,
+      "max_value": 60
+    },
+    "song_position": {
+      "type": "song_position",
+      "min_value": -1,
+      "max_value": 101
+    },
+    "descriptor": {
+      "type": "descriptor",
+      "min_value": 0,
+      "max_value": 146
+    },
+    "keycount": {
+      "type": "keycount",
+      "min_value": 1,
+      "max_value": 18
+    },
+    "hold_note_ratio": {
+      "type": "hold_note_ratio",
+      "min_value": -1,
+      "max_value": 12
+    },
+    "scroll_speed_ratio": {
+      "type": "scroll_speed_ratio",
+      "min_value": -1,
+      "max_value": 12
+    },
+    "global_sv": {
+      "type": "global_sv",
+      "min_value": 40,
+      "max_value": 360
+    }
+  },
+  "event_start": {
+    "t": 9,
+    "snap": 1647,
+    "pos": 1664,
+    "pos_refine": 2621,
+    "column": 2877,
+    "scroll_speed": 2895,
+    "new_combo": 3896,
+    "hitsound": 3897,
+    "volume": 3970,
+    "circle": 4071,
+    "spinner": 4072,
+    "spinner_end": 4073,
+    "slider_head": 4074,
+    "bezier_anchor": 4075,
+    "perfect_anchor": 4076,
+    "catmull_anchor": 4077,
+    "red_anchor": 4078,
+    "last_anchor": 4079,
+    "slider_end": 4080,
+    "beat": 4081,
+    "measure": 4082,
+    "timing_point": 4083,
+    "slider_sustain": 4084,
+    "slider_repeat_sustain": 4085,
+    "spinner_sustain": 4086,
+    "hold_note": 4087,
+    "hold_note_end": 4088,
+    "scroll_speed_change": 4089,
+    "hold_note_sustain": 4090,
+    "drumroll": 4091,
+    "drumroll_end": 4092,
+    "denden": 4093,
+    "denden_end": 4094,
+    "drumroll_sustain": 4095,
+    "denden_sustain": 4096,
+    "gamemode": 4097,
+    "difficulty": 4101,
+    "mapper": 4126,
+    "cs": 11732,
+    "year": 11754,
+    "hitsounded": 11825,
+    "song_length": 11827,
+    "song_position": 11888,
+    "descriptor": 11991,
+    "keycount": 12138,
+    "hold_note_ratio": 12156,
+    "scroll_speed_ratio": 12170,
+    "global_sv": 12184
+  },
+  "event_end": {
+    "t": 1647,
+    "snap": 1664,
+    "pos": 2621,
+    "pos_refine": 2877,
+    "column": 2895,
+    "scroll_speed": 3896,
+    "new_combo": 3897,
+    "hitsound": 3970,
+    "volume": 4071,
+    "circle": 4072,
+    "spinner": 4073,
+    "spinner_end": 4074,
+    "slider_head": 4075,
+    "bezier_anchor": 4076,
+    "perfect_anchor": 4077,
+    "catmull_anchor": 4078,
+    "red_anchor": 4079,
+    "last_anchor": 4080,
+    "slider_end": 4081,
+    "beat": 4082,
+    "measure": 4083,
+    "timing_point": 4084,
+    "slider_sustain": 4085,
+    "slider_repeat_sustain": 4086,
+    "spinner_sustain": 4087,
+    "hold_note": 4088,
+    "hold_note_end": 4089,
+    "scroll_speed_change": 4090,
+    "hold_note_sustain": 4091,
+    "drumroll": 4092,
+    "drumroll_end": 4093,
+    "denden": 4094,
+    "denden_end": 4095,
+    "drumroll_sustain": 4096,
+    "denden_sustain": 4097,
+    "gamemode": 4101,
+    "difficulty": 4126,
+    "mapper": 11732,
+    "cs": 11754,
+    "year": 11825,
+    "hitsounded": 11827,
+    "song_length": 11888,
+    "song_position": 11991,
+    "descriptor": 12138,
+    "keycount": 12156,
+    "hold_note_ratio": 12170,
+    "scroll_speed_ratio": 12184,
+    "global_sv": 12505
+  },
+  "num_diff_classes": 24,
+  "max_difficulty": 12,
+  "num_mapper_classes": 7605,
+  "num_cs_classes": 21,
+  "vocab_size_out": 4097,
+  "vocab_size_in": 12505,
+  "descriptor_idx": {
+    "style/messy": 1,
+    "expression/simple": 2,
+    "expression/chaotic": 3,
+    "style/geometric": 4,
+    "style/freeform": 5,
+    "style/grid snap": 6,
+    "style/hexgrid": 7,
+    "style/symmetrical": 8,
+    "gimmick/playfield constraint": 9,
+    "expression/old-style revival": 10,
+    "expression/repetition": 11,
+    "expression/progression": 12,
+    "expression/high contrast": 13,
+    "expression/improvisation": 86,
+    "skillset/tech": 111,
+    "tech/slider tech": 16,
+    "tech/finger control": 17,
+    "sliders/complex sv": 125,
+    "skillset/jumps": 19,
+    "jumps/sharp": 20,
+    "jumps/wide": 21,
+    "jumps/linear": 22,
+    "tech/aim control": 23,
+    "streams/flow aim": 24,
+    "streams/bursts": 25,
+    "skillset/streams": 26,
+    "streams/spaced streams": 27,
+    "streams/stamina": 129,
+    "streams/cutstreams": 29,
+    "skillset/reading": 30,
+    "reading/visually dense": 31,
+    "reading/overlaps": 32,
+    "skillset/precision": 98,
+    "skillset/alt": 34,
+    "meta/collab": 35,
+    "meta/multi-song": 38,
+    "meta/variable timing": 39,
+    "meta/time signatures": 40,
+    "style/clean": 41,
+    "sliders/complex slidershapes": 42,
+    "gimmick/aspire": 43,
+    "style/distance snap": 44,
+    "context/mapping contest": 45,
+    "context/tournament custom": 46,
+    "tech/complex snap": 136,
+    "expression/iNiS-style": 49,
+    "gimmick/2B": 50,
+    "expression/playfield usage": 51,
+    "gimmick/tag": 52,
+    "expression/difficulty spike": 53,
+    "style/avant-garde": 54,
+    "additions/keysounds": 55,
+    "gimmick/storyboard": 56,
+    "sliders/low sv": 57,
+    "sliders/high sv": 58,
+    "meta/mega collab": 59,
+    "gimmick/slider only": 60,
+    "gimmick/circle only": 61,
+    "additions/custom skin": 63,
+    "gimmick/video": 64,
+    "reading/perfect stacks": 66,
+    "gimmick/ninja spinners": 67,
+    "meta/accelerating bpm": 70,
+    "context/custom song": 71,
+    "gimmick/mirrored": 72,
+    "style/vocal": 73,
+    "style/tnt": 74,
+    "streams/speed": 75,
+    "style/double bpm": 76,
+    "style/finisher-heavy": 77,
+    "style/mono-heavy": 78,
+    "gimmick/reversed": 79,
+    "gimmick/yellow notes": 80,
+    "gimmick/barlines": 82,
+    "gimmick/memory": 83,
+    "style/taikosu": 84,
+    "meta/swing": 85,
+    "style/convert": 97,
+    "additions/hitsounds": 89,
+    "tech/flow": 91,
+    "tech/antiflow": 92,
+    "tech/jump": 93,
+    "gimmick/no hyperdashes": 94,
+    "gimmick/long sliders": 95,
+    "gimmick/spinner-heavy": 96,
+    "tech/wiggles": 99,
+    "tech/hyperwalks": 100,
+    "gimmick/dodge the beat": 101,
+    "style/jumpstream": 102,
+    "style/handstream": 103,
+    "style/quadstream": 104,
+    "style/chordjack": 105,
+    "style/longjack": 106,
+    "skillset/speedjack": 107,
+    "skillset/wristjack": 108,
+    "style/chordstream": 109,
+    "gimmick/delay": 110,
+    "style/mixed rice": 112,
+    "style/LN coordination": 113,
+    "style/LN release": 114,
+    "gimmick/LN inverse": 115,
+    "style/LN density": 116,
+    "style/LN mixed ": 117,
+    "style/generic hybrid": 118,
+    "tech/technical hybrid": 119,
+    "style/tiebreaker": 120,
+    "style/o2jam": 121,
+    "style/N+1": 122,
+    "style/dump": 123,
+    "jumps/squares": 130,
+    "jumps/triangles": 131,
+    "jumps/cross-screen": 132,
+    "jumps/stamina": 133,
+    "skillset/gimmick": 137,
+    "jumps/stars": 138,
+    "jumps/back and forth": 139,
+    "jumps/freeform": 140,
+    "streams/doubles": 141,
+    "streams/quads": 142,
+    "expression/inspo": 143,
+    "expression/conceptual": 144,
+    "additions/combo colours": 145
+  }
+}
