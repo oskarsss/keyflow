@@ -112,7 +112,7 @@ class ImportedPlaylistTest {
         val library = OnDeviceLibrary(context)
         val playlist = library.createPlaylist(raw(), Random(3))
         val songs = playlist.getJSONArray("songs")
-        songs.getJSONObject(0).put("status", "caching").put("progress", "Downloading 50%")
+        songs.getJSONObject(0).put("status", "caching")
         songs.getJSONObject(1).put("status", "ready")
         val cached = songs.getJSONObject(2)
         store.songFile(cached, "mp3").writeText("audio")
@@ -121,7 +121,6 @@ class ImportedPlaylistTest {
         val recovered = OnDeviceLibrary(context).snapshot(playlist.getString("id"))!!
         assertEquals(ids(playlist), ids(recovered))
         assertEquals("pending", recovered.getJSONArray("songs").getJSONObject(0).getString("status"))
-        assertFalse(recovered.getJSONArray("songs").getJSONObject(0).has("progress"))
         assertEquals("pending", recovered.getJSONArray("songs").getJSONObject(1).getString("status"))
         assertEquals("ready", recovered.getJSONArray("songs").getJSONObject(2).getString("status"))
 
@@ -159,7 +158,7 @@ class ImportedPlaylistTest {
         val song = first.getJSONArray("songs").getJSONObject(0)
         store.songFile(song, "mp3").writeText("audio")
         store.chartFile(song).writeText("{}")
-        song.put("status", "ready").put("progress", "Offline ready").put("error", "Old error")
+        song.put("status", "ready").put("error", "Old error")
         library.save(first)
         store.prefs.edit().putInt("song.${song.getString("id")}.score", 1000).commit()
         val generation = library.cacheGeneration
@@ -170,7 +169,6 @@ class ImportedPlaylistTest {
             val songs = playlist.getJSONArray("songs")
             for (i in 0 until songs.length()) {
                 assertEquals("pending", songs.getJSONObject(i).getString("status"))
-                assertFalse(songs.getJSONObject(i).has("progress"))
                 assertFalse(songs.getJSONObject(i).has("error"))
             }
         }
@@ -227,5 +225,30 @@ class ImportedPlaylistTest {
         assertFalse(store.songFile(own, "mp3").exists())
         assertFalse(store.chartFile(own).exists())
         assertTrue(store.completed(own))
+    }
+
+    @Test
+    fun plansReadEachPlaylistOnceUntilItChanges() {
+        val library = OnDeviceLibrary(context)
+        val playlist = library.createPlaylist(raw(), Random(9))
+        val id = playlist.getString("id")
+        val first = library.readPlaylists().single()
+        assertSame(first, library.readPlaylists().single())
+        library.rename(id, "Renamed")
+        assertEquals("Renamed", library.readPlaylists().single().getString("title"))
+        library.deletePlaylist(id)
+        assertTrue(library.readPlaylists().isEmpty())
+    }
+
+    @Test
+    fun oneFolderListingAnswersWhichSongsArePlayable() {
+        val songs = (0 until 4).map { JSONObject().put("id", "songid%05d".format(it)) } + JSONObject().put("id", "x").put("demo", true)
+        store.songFile(songs[0], "mp3").writeText("audio")
+        store.chartFile(songs[0]).writeText("{}")
+        // Audio without a chart isn't playable yet.
+        store.songFile(songs[1], "mp3").writeText("audio")
+        val offline = store.offlineCheck()
+        assertEquals(songs.map(store::offline), songs.map(offline))
+        assertEquals(listOf(true, false, false, false, true), songs.map(offline))
     }
 }

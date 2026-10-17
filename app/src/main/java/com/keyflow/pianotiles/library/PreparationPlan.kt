@@ -45,6 +45,9 @@ object PreparationPlan {
         val arcadePlaying: Boolean = false,
     )
 
+    /** Download ahead and Download all, which can wait for Wi-Fi or a charger. */
+    fun big(reason: Reason) = reason == Reason.AHEAD || reason == Reason.ALL
+
     /** A failed song is retried after this long, unless the player opens it. */
     const val RETRY_MS = 15 * 60_000L
     /** A song that failed only because the connection dropped is retried sooner. */

@@ -10,8 +10,8 @@ A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist
 - **Arcade.** *Time Attack* (1, 2, 3 or 5 minutes) and *Endless* (lives carry over and each song is faster) play random 45-second parts of songs from the levels you have reached.
 - **Progression.** Runs earn XP toward your player level, and playing on consecutive days builds a streak.
 - **Timing.** After each song, Keyflow measures whether your hits leaned early or late and adjusts the timing offset, which differs between phones and headphones. It can also be set by hand.
-- **Settings** cover song speed, note speed, level length, timing, vibration and app-wide storage. Each playlist has its own settings, under the gear on the Playlists screen: how many levels to keep ready, keeping its songs, downloading or removing them, renaming and deleting. A playlist whose next level isn't on the phone yet is greyed out with an estimate of when it can be played.
-- Songs are prepared in a foreground service, so it continues with the screen off. Prepared songs play offline. Three original piano pieces ship with the app.
+- **Settings** cover song speed, note speed, level length, timing, vibration and app-wide storage, including whether *Download ahead* and *Download all* wait for Wi-Fi (on by default) or a charger. Your next two levels and Arcade's songs download on any connection. Each playlist has its own settings, under the gear on the Playlists screen: how many levels to keep ready, keeping its songs, downloading or removing them, renaming and deleting. A playlist whose next level isn't on the phone yet is greyed out with an estimate of when it can be played.
+- Songs are prepared in a foreground service, so it continues with the screen off, and it eases off while you play. Prepared songs play offline. Three original piano pieces ship with the app.
 
 Charts come from the human-chart-trained [Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini) mania model, adapted to run locally and conditioned on beats from [Beat This!](https://github.com/CPJKU/beat_this). See [the chart model](docs/chart-model.md) and [beat tracking](docs/beat-tracking.md).
 
@@ -19,7 +19,7 @@ Each song has a 20-minute / 100 MB limit. Private playlists that need an account
 
 ## Install
 
-Download the signed APK from this private repository's [releases](https://github.com/oskarsss/PianoTiles/releases). It supports **ARM64 phones and x86-64 emulators** on Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make it about 215 MiB.
+Download the signed APK from this private repository's [releases](https://github.com/oskarsss/PianoTiles/releases): `keyflow-X.Y.Z.apk` for **ARM64 phones**, or `keyflow-X.Y.Z-x86_64.apk` for **x86-64 emulators**, on Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make each about 160 MiB.
 
 Development releases don't keep data between versions: playlists, downloads, scores and settings may need to be cleared after an update.
 
@@ -54,9 +54,9 @@ adb shell am instrument -w -r \
 
 ### Release
 
-Bump `versionCode` and `versionName` in `app/build.gradle.kts`, commit, then publish a GitHub release whose tag matches `versionName` (for example `v1.6.2`). `.github/workflows/release.yml` then runs the tests and lint, builds the signed APK with `tools/build_release.py`, and attaches the APK, a source archive and `SHA256SUMS`. It needs the Actions secrets `KEYFLOW_KEYSTORE_BASE64`, `KEYFLOW_STORE_PASSWORD` and `KEYFLOW_KEY_PASSWORD`.
+Bump `versionCode` and `versionName` in `app/build.gradle.kts`, commit, then publish a GitHub release whose tag matches `versionName` (for example `v1.6.2`). `.github/workflows/release.yml` then runs the tests and lint, builds the signed APKs with `tools/build_release.py`, and attaches the phone and emulator APKs, a source archive and `SHA256SUMS`. It needs the Actions secrets `KEYFLOW_KEYSTORE_BASE64`, `KEYFLOW_STORE_PASSWORD` and `KEYFLOW_KEY_PASSWORD`.
 
-To sign locally, set `KEYFLOW_KEYSTORE`, `KEYFLOW_STORE_PASSWORD` and `KEYFLOW_KEY_PASSWORD` and run `./gradlew :app:assembleRelease`, or `python3 tools/build_release.py` from a clean, committed tree. Without them, release builds are unsigned.
+To sign locally, set `KEYFLOW_KEYSTORE`, `KEYFLOW_STORE_PASSWORD` and `KEYFLOW_KEY_PASSWORD` and run `./gradlew :app:assembleRelease`, or `python3 tools/build_release.py` from a clean, committed tree. Without them, release builds are unsigned. Release builds are shrunk with R8 and come as one APK per processor, in `app/build/outputs/apk/release/`.
 
 ### Tools
 

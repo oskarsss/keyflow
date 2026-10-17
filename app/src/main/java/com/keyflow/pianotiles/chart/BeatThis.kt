@@ -4,10 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
-import java.io.File
 import java.nio.FloatBuffer
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /** The published Beat This! final0 network; all inference stays on the phone. */
 class BeatThis(private val context: Context) {
@@ -16,7 +13,7 @@ class BeatThis(private val context: Context) {
         val beat = FloatArray(features.frames) { -1000f }
         val downbeat = FloatArray(features.frames) { -1000f }
         val assigned = BooleanArray(features.frames)
-        ModelSessions.use(model()) { (session) ->
+        ModelSessions.use(context, ModelSessions.Model("rhythm/beat-this-final0-int8.onnx", MODEL_BYTES)) { (session) ->
             val starts = MusicalRhythm.chunkStarts(features.frames)
             val values = FloatArray(CHUNK * MusicFeatures.BINS)
             for ((chunk, start) in starts.withIndex()) {
@@ -46,24 +43,9 @@ class BeatThis(private val context: Context) {
         return MusicalRhythm.fromLogits(beat, downbeat)
     }
 
-    private fun model(): File {
-        val dir = File(context.noBackupFilesDir, "rhythm").apply { mkdirs() }
-        val file = File(dir, "beat-this-final0-int8-v1.onnx")
-        synchronized(MODEL_LOCK) {
-            if (file.length() != MODEL_BYTES) {
-                val temporary = File(file.path + ".part")
-                context.assets.open("rhythm/beat-this-final0-int8.onnx").use { input -> temporary.outputStream().use(input::copyTo) }
-                check(temporary.length() == MODEL_BYTES) { "The rhythm model could not be prepared." }
-                Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-        }
-        return file
-    }
-
     companion object {
         const val CHUNK = 1500
         const val BORDER = 6
         private const val MODEL_BYTES = 21_068_518L
-        private val MODEL_LOCK = Any()
     }
 }

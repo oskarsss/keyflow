@@ -117,10 +117,13 @@ private fun MainActivity.showReadiness(page: ScrollView?, statuses: Map<String, 
 
 private fun MainActivity.downloadAll(playlist: JSONObject) {
     val songs = playlist.getJSONArray("songs")
-    val missing = (0 until songs.length()).count { !store.offline(songs.getJSONObject(it)) }
+    val offline = store.offlineCheck()
+    val missing = (0 until songs.length()).count { !offline(songs.getJSONObject(it)) }
     if (missing == 0) return Toast.makeText(this, "Every song is already downloaded", Toast.LENGTH_SHORT).show()
     val id = playlist.getString("id")
-    Toast.makeText(this, "Downloading $missing songs", Toast.LENGTH_SHORT).show()
+    val waitFor = Preparation.bigDownloadsWaitFor(this)
+    Toast.makeText(this, if (waitFor == null) "Downloading $missing songs" else "$missing songs will download when you have $waitFor",
+        Toast.LENGTH_SHORT).show()
     io.execute {
         library.setDownloadAll(id, true)
         Preparation.wake(this)
@@ -142,7 +145,8 @@ internal fun MainActivity.showPlaylistSettings(id: String, from: Screen? = null)
     io.execute {
         val (ready, bytes) = library.usage(list)
         val size = android.text.format.Formatter.formatShortFileSize(this, bytes)
-        handler.post { if (!isDestroyed) stats.text = "$ready of ${list.size} songs downloaded · $size" }
+        val waiting = Preparation.bigDownloadsWaitFor(this)?.takeIf { ready < list.size }?.let { "\nMore songs download when you have $it" }
+        handler.post { if (!isDestroyed) stats.text = "$ready of ${list.size} songs downloaded · $size${waiting.orEmpty()}" }
     }
     settingRow(downloads, "Download ahead", "Levels kept ready, from your next one") {
         ui.stepper(store.preloadCount(playlist), LibraryStore.MIN_PRELOAD..LibraryStore.MAX_PRELOAD, 1, { "$it" }) { count ->

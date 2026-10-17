@@ -26,9 +26,10 @@ from pathlib import Path
 assert Path(os.environ["KEYFLOW_KEYSTORE"]).is_file()
 assert os.environ["KEYFLOW_STORE_PASSWORD"] == "test-password"
 assert os.environ["KEYFLOW_KEY_PASSWORD"] == "test-password"
-apk = Path("app/build/outputs/apk/release/app-release.apk")
-apk.parent.mkdir(parents=True, exist_ok=True)
-apk.write_bytes(b"test signed APK")
+outputs = Path("app/build/outputs/apk/release")
+outputs.mkdir(parents=True, exist_ok=True)
+for abi in ("arm64-v8a", "x86_64"):
+    (outputs / f"app-{abi}-release.apk").write_bytes(f"test signed {abi} APK".encode())
 ''')
         wrapper.chmod(0o755)
         self.git("init", "-q")
@@ -56,8 +57,11 @@ apk.write_bytes(b"test signed APK")
         self.assertEqual(result.returncode, 0, result.stderr)
         artifacts = self.root / "artifacts"
         apk = artifacts / "keyflow-1.3.0.apk"
+        emulator = artifacts / "keyflow-1.3.0-x86_64.apk"
         source = artifacts / "keyflow-1.3.0-source.tar.gz"
-        self.assertEqual(apk.read_bytes(), b"test signed APK")
+        # Phones get the plain name; the emulator build is marked.
+        self.assertEqual(apk.read_bytes(), b"test signed arm64-v8a APK")
+        self.assertEqual(emulator.read_bytes(), b"test signed x86_64 APK")
         with tarfile.open(source) as archive:
             self.assertIn("keyflow-1.3.0/tools/build_release.py", archive.getnames())
             self.assertFalse(any("artifacts/" in name for name in archive.getnames()))
@@ -65,7 +69,7 @@ apk.write_bytes(b"test signed APK")
                              b'versionName = "1.3.0"\n')
         checksums = (artifacts / "SHA256SUMS").read_text().splitlines()
         self.assertEqual(checksums, [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
-                                     for path in (apk, source)])
+                                     for path in (apk, emulator, source)])
 
     def test_ci_signing_works_without_a_local_password_file(self):
         (self.root / "artifacts/release-password").unlink()

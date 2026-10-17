@@ -171,11 +171,10 @@ private fun MainActivity.addHero(body: LinearLayout, index: Int, song: JSONObjec
 
 /** Whole-song preparation: the download, then the on-device chart, as one progress value. */
 internal fun MainActivity.downloadFraction(song: JSONObject): Float? =
-    song.optDouble("prepared").takeIf { song.optString("status") == "caching" && !it.isNaN() }?.toFloat()
+    library.preparing(song.optString("id"))?.second?.toFloat()
 
 internal fun MainActivity.downloadStage(song: JSONObject): String {
-    val fraction = downloadFraction(song) ?: return "Getting music ready…"
-    val stage = song.optString("progress").ifBlank { "Preparing song" }
+    val (stage, fraction) = library.preparing(song.optString("id")) ?: return "Getting music ready…"
     return "$stage · ${(fraction * 100).toInt()}%"
 }
 

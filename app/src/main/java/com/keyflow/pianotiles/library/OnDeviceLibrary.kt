@@ -27,6 +27,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     private val lock = Any()
     private val cacheLock = Any()
     private val playing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val preparing = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Double>>()
+    /** [readPlaylists]' parsed playlists with the revision and file time they were read at. */
+    private val parsed = java.util.concurrent.ConcurrentHashMap<String, Pair<Pair<Long, Long>, JSONObject>>()
     @Volatile internal var cacheGeneration = 0L
         private set
 
@@ -40,8 +43,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     if (status != "ready") { song.put("status", "ready"); changed = true }
                 } else if (status in listOf("ready", "caching", "queued")) {
                     song.put("status", "pending")
-                    song.remove("progress")
-                    song.remove("prepared")
                     changed = true
                 }
             }
@@ -148,13 +149,32 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             runCatching { JSONObject(index(id).readText()) }.getOrNull()
         }
 
+    /** Fresh copies of every playlist, safe to change and [save]. */
     fun savedPlaylists(): List<JSONObject> = synchronized(lock) {
-        indexes.listFiles().orEmpty()
-            .filter { it.name.matches(Regex("[A-Za-z0-9_-]{1,80}\\.json")) }
-            .mapNotNull { snapshot(it.nameWithoutExtension) }
-            .filter { it.optString("id").isNotBlank() && it.optJSONArray("songs") != null }
-            .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
+        indexFiles().mapNotNull { snapshot(it.nameWithoutExtension) }.let(::usable)
     }
+
+    /**
+     * Every playlist for reading only, parsed again only after it changes. Plans and screens
+     * that look at large playlists every few seconds use this; callers must not modify them.
+     */
+    fun readPlaylists(): List<JSONObject> {
+        val files = indexFiles()
+        parsed.keys.retainAll(files.map { it.nameWithoutExtension }.toSet())
+        return files.mapNotNull { file ->
+            val id = file.nameWithoutExtension
+            // Read before the file, so a save in between makes the next call parse it again.
+            val version = revision(id) to file.lastModified()
+            parsed[id]?.takeIf { it.first == version }?.second
+                ?: snapshot(id)?.also { parsed[id] = version to it }
+        }.let(::usable)
+    }
+
+    private fun indexFiles() = indexes.listFiles().orEmpty().filter { it.name.matches(INDEX_NAME) }
+
+    private fun usable(playlists: List<JSONObject>) = playlists
+        .filter { it.optString("id").isNotBlank() && it.optJSONArray("songs") != null }
+        .sortedBy { it.optString("title").lowercase(java.util.Locale.ROOT) }
 
     fun protectPlayback(id: String) { playing.add(id) }
     fun releasePlayback(id: String) { playing.remove(id) }
@@ -169,7 +189,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         val cutoff = now - days * 86_400_000L
         val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
         var removed = 0
-        val playlists = savedPlaylists()
+        val playlists = readPlaylists()
         val kept = Preparation.wantedIds(context) + playlists.filter(store::keepsDownloads).flatMap(::songsOf).map { it.optString("id") }.toSet()
         for (entry in Arcade.pool(playlists)) {
             if (!store.prefs.getBoolean("smartStorage", true)) break
@@ -188,7 +208,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 for (i in 0 until songs.length()) {
                     val song = songs.getJSONObject(i)
                     if (!store.offline(song) && song.optString("status") == "ready")
-                        song.put("status", "pending").remove("progress")
+                        song.put("status", "pending")
                 }
                 save(playlist)
             }
@@ -243,7 +263,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             latest.remove("downloadAll")
             for (song in songsOf(latest))
                 if (!store.offline(song) && song.optString("status") in setOf("ready", "error"))
-                    song.put("status", "pending").remove("progress")
+                    song.put("status", "pending")
             save(latest)
         }
         removed
@@ -257,7 +277,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             files[id].orEmpty().sumOf { it.length() } +
                 File(context.cacheDir, "downloads/$id").walkTopDown().filter { it.isFile }.sumOf { it.length() }
         }
-        return songs.count { !it.optBoolean("demo") && store.offline(it) } to bytes
+        val offline = store.offlineCheck()
+        return songs.count { !it.optBoolean("demo") && offline(it) } to bytes
     }
 
     fun setKeepDownloads(id: String, keep: Boolean): JSONObject = update(id) { it.put("keepDownloads", keep) }
@@ -293,8 +314,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 for (i in 0 until songs.length()) {
                     val song = songs.getJSONObject(i)
                     song.put("status", if (store.offline(song)) "ready" else "pending")
-                    song.remove("progress")
-                    song.remove("prepared")
                     song.remove("error")
                 }
                 save(playlist)
@@ -304,8 +323,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
 
     /**
      * Downloads and charts one song. [progress] receives a message and the whole preparation's
-     * fraction. When [shouldYield] turns true during charting, preparation stops with [Yielded] and
-     * the song returns to pending; a finished download is kept for the next attempt.
+     * fraction. [shouldYield] is asked between steps of the analysis; when it turns true,
+     * preparation stops with [Yielded] and the song returns to pending, keeping a finished
+     * download for the next attempt. Returns how long each part took, or null when the song was
+     * already prepared.
      */
     fun cacheSong(
         playlistId: String,
@@ -313,14 +334,20 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         generation: Long = cacheGeneration,
         shouldYield: () -> Boolean = { false },
         progress: (String, Double) -> Unit,
-    ) = synchronized(cacheLock) {
-        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, shouldYield, progress)
+    ): Timing? = synchronized(cacheLock) {
+        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, shouldYield, progress) else null
     }
+
+    /** A prepared song's download time, null when an earlier download was reused, and chart time. */
+    class Timing(val downloadMs: Long?, val chartMs: Long, val seconds: Double)
 
     /** Thrown when a song's preparation gives way to one the player is waiting for. */
     class Yielded : RuntimeException("Preparation paused for another song")
 
-    private fun cacheSongNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit) {
+    /** Whether the song's download is done and kept, so only its chart is left. */
+    fun downloaded(songId: String) = File(context.cacheDir, "downloads/$songId/complete").isFile
+
+    private fun cacheSongNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit): Timing? {
         val playlist =
             requireNotNull(snapshot(playlistId)) { "Playlist not found. Import it again." }
         val songs = playlist.getJSONArray("songs")
@@ -335,17 +362,11 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             (0 until position).all { store.completed(songs.getJSONObject(it)) })
         if (store.offline(song)) {
             updateSong(playlistId, songId) { it.put("status", "ready") }
-            return
+            return null
         }
-        // Each saved report rewrites the playlist, so only changes the player can see are saved.
-        var savedMessage = ""
-        var savedFraction = -1.0
+        // Progress stays in memory: saving it would rewrite the whole playlist every percent.
         fun report(message: String, fraction: Double) {
-            if (message != savedMessage || fraction - savedFraction >= .01) {
-                updateSong(playlistId, songId) { it.put("progress", message).put("prepared", fraction) }
-                savedMessage = message
-                savedFraction = fraction
-            }
+            preparing[songId] = message to fraction
             progress("$title · $message", fraction)
         }
         updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
@@ -355,6 +376,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         val audio = File(folder, "source.mp3")
         val info = File(folder, "source.info.json")
         val complete = File(folder, "complete")
+        val started = System.currentTimeMillis()
+        var downloadMs: Long? = null
         try {
             // A download whose chart gave way to another song is reused as is.
             if (!complete.isFile) {
@@ -390,10 +413,13 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 }
                 check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
                 complete.createNewFile()
+                downloadMs = System.currentTimeMillis() - started
             }
+            val charting = System.currentTimeMillis()
             val chart = writeChart(song, audio, songId, shouldYield) { message, fraction ->
                 report(message, DOWNLOAD_SHARE + fraction * (1 - DOWNLOAD_SHARE))
             }
+            val chartMs = System.currentTimeMillis() - charting
             val metadata = JSONObject(info.readText())
             Files.move(
                 audio.toPath(),
@@ -414,7 +440,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                 value
                     .put("status", "ready")
                     .put("duration", chart.duration)
-                    .put("progress", "Offline ready")
                     .put(
                         "title",
                         metadata.optString("track").ifBlank {
@@ -427,27 +452,34 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                             metadata.optString("uploader", song.optString("artist"))
                         },
                     )
-                value.remove("prepared")
             }
             folder.deleteRecursively()
+            return Timing(downloadMs, chartMs, chart.duration)
         } catch (error: Throwable) {
             if (error is Yielded) {
-                updateSong(playlistId, songId) { it.put("status", "pending").remove("progress"); it.remove("prepared") }
+                updateSong(playlistId, songId) { it.put("status", "pending") }
                 throw error
             }
             File(folder, "download.log").writeText(error.message ?: "Download failed")
             // A lost connection says nothing about the song, so it is tried again soon.
-            val connection = !Preparation.connected(context) || NETWORK_ERROR.containsMatchIn(error.message.orEmpty())
+            val connection = connectionLost(error)
             updateSong(playlistId, songId) {
                 it.put("status", "error")
                     .put("failedAt", System.currentTimeMillis())
                     .put("connection", connection)
                     .put("error", error.message?.takeLast(2000) ?: "Download failed. Please retry.")
-                it.remove("prepared")
             }
             throw error
+        } finally {
+            preparing.remove(songId)
         }
     }
+
+    /** Whether [error] came from a lost or missing connection rather than from the song. */
+    fun connectionLost(error: Throwable) = !Preparation.connected(context) || NETWORK_ERROR.containsMatchIn(error.message.orEmpty())
+
+    /** The stage and whole-preparation fraction of a song being prepared now. */
+    fun preparing(songId: String): Pair<String, Double>? = preparing[songId]
 
     /** [progress] gets this step's own fraction; the chart model is most of the work. */
     private fun writeChart(
@@ -459,9 +491,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     ): Chart {
         progress("Finding the beat", 0.0)
         val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
-        val rhythm = BeatThis(context).analyze(features)
+        val rhythm = BeatThis(context).analyze(features) { if (shouldYield()) throw Yielded() }
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
-        if (shouldYield()) throw Yielded()
         progress("Placing tiles", BEAT_SHARE)
         val temporary = File.createTempFile("chart-audio-", ".pcm", context.cacheDir)
         val learned = try {
@@ -505,6 +536,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         // Process-wide, so a save through any instance is seen by every reader.
         private val revisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
         private val SONG_ID = Regex("[A-Za-z0-9_-]{11}")
+        private val INDEX_NAME = Regex("[A-Za-z0-9_-]{1,80}\\.json")
         private val NETWORK_ERROR = Regex("Network is unreachable|timed out|Temporary failure in name resolution|" +
             "Name or service not known|Connection (refused|reset|aborted)|No address associated", RegexOption.IGNORE_CASE)
 

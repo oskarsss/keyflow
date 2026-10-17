@@ -2,7 +2,10 @@ package com.keyflow.pianotiles.chart
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import android.content.Context
 import java.io.File
+import java.io.FileInputStream
+import java.nio.channels.FileChannel
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -11,6 +14,9 @@ import java.util.concurrent.TimeUnit
  * Keeps the bundled models loaded while songs are being prepared one after another, instead of
  * loading and optimizing each graph again for every song. Once preparation has been idle for
  * [IDLE_MS], the sessions close so they don't hold memory during play.
+ *
+ * Models are stored uncompressed in the APK and read from it in place, so the phone needs no
+ * second copy of them.
  */
 internal object ModelSessions {
     private const val IDLE_MS = 60_000L
@@ -33,13 +39,14 @@ internal object ModelSessions {
         }
     }
 
-    fun <T> use(vararg models: File, block: (List<OrtSession>) -> T): T {
+    /** Runs [block] with a session for each asset, which must have its [Model.bytes]. */
+    fun <T> use(context: Context, vararg models: Model, block: (List<OrtSession>) -> T): T {
         val sessions = synchronized(lock) {
             closing?.cancel(false)
             closing = null
             users++
             try {
-                models.map { open.getOrPut(it.path) { OrtEnvironment.getEnvironment().createSession(it.path, options) } }
+                models.map { model -> open.getOrPut(model.asset) { load(context, model) } }
             } catch (error: Throwable) {
                 release()
                 throw error
@@ -50,6 +57,22 @@ internal object ModelSessions {
         } finally {
             synchronized(lock) { release() }
         }
+    }
+
+    class Model(val asset: String, val bytes: Long)
+
+    /** The session keeps its own copy of the weights, so the mapped file is let go once it is built. */
+    private fun load(context: Context, model: Model): OrtSession =
+        context.assets.openFd(model.asset).use { file ->
+            check(file.declaredLength == model.bytes) { "The app's ${model.asset} is damaged. Reinstall Keyflow." }
+            val bytes = FileInputStream(file.fileDescriptor).channel.use { it.map(FileChannel.MapMode.READ_ONLY, file.startOffset, file.declaredLength) }
+            OrtEnvironment.getEnvironment().createSession(bytes, options)
+        }
+
+    /** Removes the copies of the models that earlier versions unpacked from the APK. */
+    fun removeOldCopies(context: Context) {
+        File(context.noBackupFilesDir, "chart-model").deleteRecursively()
+        File(context.noBackupFilesDir, "rhythm").deleteRecursively()
     }
 
     private fun release() {

@@ -11,6 +11,7 @@ import android.view.View
 import android.widget.*
 import com.keyflow.pianotiles.arcade.Arcade
 import com.keyflow.pianotiles.arcade.ArcadeSongs
+import com.keyflow.pianotiles.chart.ModelSessions
 import com.keyflow.pianotiles.game.GameView
 import com.keyflow.pianotiles.library.Covers
 import com.keyflow.pianotiles.library.LibraryStore
@@ -49,6 +50,10 @@ class MainActivity : Activity() {
     internal var polling = false
     internal var player: MediaPlayer? = null
     internal var game: GameView? = null
+        set(value) {
+            field = value
+            Preparation.playing = value != null && foreground
+        }
     internal var pauseOverlay: View? = null
     internal var currentSong: JSONObject? = null
     internal var currentIndex = 0
@@ -92,6 +97,8 @@ class MainActivity : Activity() {
         store = LibraryStore(this)
         ui = Ui(this)
         covers = Covers(store)
+        Preparation.watch(this)
+        maintenance.execute { ModelSessions.removeOldCopies(this) }
         window.statusBarColor = Palette.BG
         window.navigationBarColor = Palette.BG
         if (intent.action == Intent.ACTION_SEND) {
@@ -145,12 +152,14 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         foreground = false
+        Preparation.playing = false
         if (game != null) showPause()
     }
 
     override fun onResume() {
         super.onResume()
         foreground = true
+        Preparation.playing = game != null
         scheduleCleanup()
         Preparation.wake(this)
         if (game != null) showPause() else if (screen == Screen.HOME) startPolling()

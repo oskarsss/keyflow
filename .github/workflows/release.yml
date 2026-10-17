@@ -75,6 +75,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           gh release upload "$RELEASE_TAG" \
             "artifacts/keyflow-$version.apk" \
+            "artifacts/keyflow-$version-x86_64.apk" \
             "artifacts/keyflow-$version-source.tar.gz" \
             artifacts/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --clobber

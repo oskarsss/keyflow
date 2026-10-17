@@ -56,7 +56,7 @@ class LibraryStore(private val context: Context) {
 
     fun songFile(song: JSONObject, extension: String): File {
         val directory = File(context.filesDir, "songs").apply { mkdirs() }
-        val id = song.optString("id").replace(Regex("[^A-Za-z0-9_-]"), "")
+        val id = song.optString("id").replace(UNSAFE_ID, "")
         require(id.isNotEmpty()) { "Song ID is missing" }
         return File(directory, "$id.$extension")
     }
@@ -74,6 +74,18 @@ class LibraryStore(private val context: Context) {
 
     fun offline(song: JSONObject) =
         song.optBoolean("demo") || (songFile(song, "mp3").isFile && chartFile(song).isFile)
+
+    /**
+     * [offline] for many songs from one look at the songs folder, instead of two file checks
+     * per song. It reflects the folder at the time of the call.
+     */
+    fun offlineCheck(): (JSONObject) -> Boolean {
+        val names = File(context.filesDir, "songs").list().orEmpty().toHashSet()
+        return { song ->
+            val id = song.optString("id").replace(UNSAFE_ID, "")
+            song.optBoolean("demo") || (id.isNotEmpty() && "$id.mp3" in names && "$id.chart.json" in names)
+        }
+    }
 
     fun markPlayed(song: JSONObject, now: Long = System.currentTimeMillis()) {
         prefs.edit().putLong(key(song) + ".lastPlayed", now).apply()
@@ -131,6 +143,8 @@ class LibraryStore(private val context: Context) {
     }
 
     companion object {
+        private val UNSAFE_ID = Regex("[^A-Za-z0-9_-]")
+
         /** The built-in songs' playlist, which ships with the app instead of being imported. */
         const val ORIGINALS = "keyflow-originals"
 

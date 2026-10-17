@@ -8,6 +8,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.keyflow.pianotiles.chart.BeatThis
 import com.keyflow.pianotiles.chart.ManiaChartModel
 import com.keyflow.pianotiles.chart.MusicFeatures
+import com.keyflow.pianotiles.chart.PreparedChart
 import com.keyflow.pianotiles.game.GameView
 import com.keyflow.pianotiles.library.LibraryStore
 import com.keyflow.pianotiles.library.OnDeviceLibrary
@@ -65,10 +66,10 @@ class RhythmAnalysisTest {
                 assertTrue(store.offline(song))
                 val chart = store.chart(song)
                 assertEquals(ManiaChartModel.METHOD, chart.getString("method"))
-                assertTrue("Journey excerpt must be prepared before play", chart.has("highlight"))
+                if (chart.getDouble("duration") > 150)
+                    assertTrue("Long songs need Journey highlights", PreparedChart.highlights(chart).isNotEmpty())
                 val savedSong = library.snapshot(id)!!.getJSONArray("songs").getJSONObject(index)
                 assertEquals("ready", savedSong.getString("status"))
-                assertFalse(savedSong.has("prepared"))
                 val modified = store.chartFile(song).lastModified()
                 var preparationMessages = 0
                 library.cacheSong(id, song.getString("id")) { _, _ -> preparationMessages++ }

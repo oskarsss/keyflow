@@ -1,12 +1,18 @@
 package com.keyflow.pianotiles.library
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.BatteryManager
 import android.os.Process
 import com.keyflow.pianotiles.arcade.ArcadeSongs
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 /**
  * The app's side of the single preparation worker: what it should do next, the song the player
@@ -18,7 +24,8 @@ object Preparation {
         private set
 
     /** The song being prepared now. */
-    class Current(val songId: String, val startedAt: Long) {
+    class Current(val song: JSONObject) {
+        val songId: String = song.optString("id")
         @Volatile var fraction = 0.0
     }
 
@@ -27,6 +34,9 @@ object Preparation {
 
     /** An Arcade run is being played, so its next song comes first when none fresh is ready. */
     @Volatile var arcadePlaying = false
+
+    /** A game is on screen, so the worker leaves it most of the phone. */
+    @Volatile var playing = false
 
     private val planner = Executors.newSingleThreadExecutor { task ->
         Thread({ Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "preparation-plan")
@@ -49,18 +59,45 @@ object Preparation {
         if (waiting?.second == songId) waiting = null
     }
 
+    private val watching = AtomicBoolean()
+    @Volatile private var unmetered: Boolean? = null
+
+    /**
+     * Starts the worker again when the phone gets a connection, Wi-Fi or a charger, which songs
+     * may be waiting for. Works while the app is open; Android stops background starts.
+     */
+    fun watch(context: Context) {
+        val app = context.applicationContext
+        if (!watching.compareAndSet(false, true)) return
+        app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = wake(app)
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val now = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                if (unmetered != now) {
+                    unmetered = now
+                    wake(app)
+                }
+            }
+        })
+        app.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = wake(app)
+        }, IntentFilter(Intent.ACTION_POWER_CONNECTED))
+    }
+
     private fun start(context: Context) {
         // Starting a foreground service can be refused while the app is in the background.
         runCatching { context.startForegroundService(Intent(context, DownloadService::class.java)) }
     }
 
+    /** One look at the library: playlists parsed only after they change and one folder listing. */
     fun inputs(context: Context): PreparationPlan.Inputs {
         val store = LibraryStore(context)
         return PreparationPlan.Inputs(
-            OnDeviceLibrary.get(context).savedPlaylists(),
+            OnDeviceLibrary.get(context).readPlaylists(),
             store.prefs.getString("playlistId", null),
             store::completed,
-            store::offline,
+            store.offlineCheck(),
             ArcadeSongs.history(store),
             waiting,
             arcadePlaying = arcadePlaying,
@@ -70,15 +107,48 @@ object Preparation {
     /** Every song the plan wants kept, ready or not; cleanup leaves these alone. */
     fun wantedIds(context: Context): Set<String> = PreparationPlan.wanted(inputs(context)).map { it.id }.toSet()
 
-    /** The next song to prepare, or null when nothing is missing or there is no internet to get it. */
+    /**
+     * The next song to prepare, or null when nothing is missing or there is no internet to get it.
+     * Download ahead and Download all wait for Wi-Fi or a charger when the player asked for that.
+     */
     fun next(context: Context, skip: Set<String> = emptySet()): PreparationPlan.Item? {
         val inputs = inputs(context)
-        val store = LibraryStore(context)
-        val pending = PreparationPlan.pending(PreparationPlan.wanted(inputs), store::offline, System.currentTimeMillis())
-            .filter { it.id !in skip }
+        val big = allowsBigDownloads(context)
+        val pending = PreparationPlan.pending(PreparationPlan.wanted(inputs), inputs.ready, System.currentTimeMillis())
+            .filter { it.id !in skip && (big || !PreparationPlan.big(it.reason)) }
         val first = pending.firstOrNull() ?: return null
         return first.takeIf { connected(context) || it.reason == PreparationPlan.Reason.WAITING }
     }
+
+    /** Settings for Download ahead and Download all; the next two levels and Arcade always download. */
+    const val WIFI_ONLY = "downloads.wifiOnly"
+    const val CHARGING_ONLY = "downloads.chargingOnly"
+
+    /** Whether Download ahead and Download all may run now, given the player's settings. */
+    fun allowsBigDownloads(context: Context) = bigDownloadsWaitFor(context) == null
+
+    /** What Download ahead and Download all are waiting for, or null when they may run. */
+    fun bigDownloadsWaitFor(context: Context): String? {
+        val prefs = LibraryStore(context).prefs
+        val wifi = prefs.getBoolean(WIFI_ONLY, true) && !unmeteredNow(context)
+        val charger = prefs.getBoolean(CHARGING_ONLY, false) && !charging(context)
+        return when {
+            wifi && charger -> "Wi-Fi and a charger"
+            wifi -> "Wi-Fi"
+            charger -> "a charger"
+            else -> null
+        }
+    }
+
+    private fun unmeteredNow(context: Context): Boolean {
+        val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = manager.activeNetwork ?: return false
+        return manager.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+    }
+
+    // Plugged in, from the battery's latest broadcast; BatteryManager.isCharging lags behind it.
+    private fun charging(context: Context) =
+        (context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
 
     /** Whether a playlist's next level can be played, and if not, when it will be. */
     sealed interface Readiness {
@@ -93,22 +163,24 @@ object Preparation {
         val store = LibraryStore(context)
         val inputs = inputs(context)
         val now = System.currentTimeMillis()
-        val pending = PreparationPlan.pending(PreparationPlan.wanted(inputs), store::offline, now)
+        val pending = PreparationPlan.pending(PreparationPlan.wanted(inputs), inputs.ready, now)
         val online = connected(context)
-        val average = averageMs(context)
+        val time = PreparationTime(store.prefs)
+        val library = OnDeviceLibrary.get(context)
         val working = current
-        fun left(id: String) = if (id == working?.songId) ((1 - working.fraction) * average).toLong() else average
+        fun left(song: JSONObject) = if (song.optString("id") == working?.songId) time.remaining(song, working.fraction)
+            else time.estimate(song, library.downloaded(song.optString("id")))
         return inputs.playlists.associate { playlist ->
             val next = PreparationPlan.window(playlist, store::completed).firstOrNull()
             playlist.optString("id") to when {
-                next == null || store.offline(next) -> Readiness.Ready
+                next == null || inputs.ready(next) -> Readiness.Ready
                 PreparationPlan.recentlyFailed(next, now) -> Readiness.Failed
                 !online -> Readiness.Offline
                 else -> {
                     val ahead = pending.take(pending.indexOfFirst { it.id == next.optString("id") } + 1)
                     // The song in progress finishes first, then the queue runs in order up to this one.
-                    val unfinished = working?.songId?.takeIf { id -> ahead.none { it.id == id } }
-                    Readiness.Waiting(ahead.sumOf { left(it.id) } + (unfinished?.let(::left) ?: 0L))
+                    val unfinished = working?.takeIf { song -> ahead.none { it.id == song.songId } }
+                    Readiness.Waiting(ahead.sumOf { left(it.song) } + (unfinished?.let { left(it.song) } ?: 0L))
                 }
             }
         }
@@ -117,21 +189,11 @@ object Preparation {
     /** "about 3 min" style wording for a wait. */
     fun describe(ms: Long): String = if (ms < 60_000) "under a minute" else "about ${(ms + 30_000) / 60_000} min"
 
-    /** How long one song usually takes on this phone, learned from finished ones. */
-    fun averageMs(context: Context): Long = LibraryStore(context).prefs.getLong(AVERAGE_KEY, DEFAULT_MS)
-
-    internal fun finished(context: Context, ms: Long) {
-        val prefs = LibraryStore(context).prefs
-        val average = prefs.getLong(AVERAGE_KEY, DEFAULT_MS)
-        prefs.edit().putLong(AVERAGE_KEY, (average * .7 + ms.coerceIn(5_000, 20 * 60_000) * .3).toLong()).apply()
-    }
+    internal fun finished(context: Context, timing: OnDeviceLibrary.Timing) = PreparationTime(LibraryStore(context).prefs).learn(timing)
 
     fun connected(context: Context): Boolean {
         val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
         val network = manager.activeNetwork ?: return false
         return manager.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     }
-
-    private const val AVERAGE_KEY = "preparation.averageMs"
-    private const val DEFAULT_MS = 75_000L
 }

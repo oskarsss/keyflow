@@ -7,6 +7,7 @@ import android.view.View
 import android.widget.*
 import com.keyflow.pianotiles.arcade.Arcade
 import com.keyflow.pianotiles.game.TimingCalibration
+import com.keyflow.pianotiles.library.Preparation
 import com.keyflow.pianotiles.ui.Glyph
 import com.keyflow.pianotiles.ui.Palette
 import kotlin.math.abs
@@ -72,9 +73,10 @@ internal fun MainActivity.showSettings() {
     ui.fill(downloads, perPlaylist)
     divider(downloads)
     io.execute {
-        val saved = library.savedPlaylists()
+        val saved = library.readPlaylists()
         val songs = Arcade.pool(saved)
-        val ready = songs.count { store.offline(it.song) }
+        val offline = store.offlineCheck()
+        val ready = songs.count { offline(it.song) }
         val size = android.text.format.Formatter.formatShortFileSize(this, library.downloadedBytes())
         val playlists = saved.map { playlist ->
             val list = playlist.getJSONArray("songs").let { a -> (0 until a.length()).map(a::getJSONObject) }
@@ -98,6 +100,21 @@ internal fun MainActivity.showSettings() {
             }
         }
     }
+    // The next two levels and Arcade always download; these hold back only the extra songs.
+    settingRow(downloads, "Download ahead on Wi-Fi only", "And Download all. Your next two levels use any connection") {
+        toggle(prefs.getBoolean(Preparation.WIFI_ONLY, true), "Download ahead on Wi-Fi only") {
+            prefs.edit().putBoolean(Preparation.WIFI_ONLY, it).apply()
+            Preparation.wake(this)
+        }
+    }
+    divider(downloads)
+    settingRow(downloads, "Download ahead only while charging", "And Download all") {
+        toggle(prefs.getBoolean(Preparation.CHARGING_ONLY, false), "Download ahead only while charging") {
+            prefs.edit().putBoolean(Preparation.CHARGING_ONLY, it).apply()
+            Preparation.wake(this)
+        }
+    }
+    divider(downloads)
     settingRow(downloads, "Smart storage management", "Remove songs you haven't played recently") {
         toggle(prefs.getBoolean("smartStorage", true), "Smart storage management") {
             prefs.edit().putBoolean("smartStorage", it).apply()

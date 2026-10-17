@@ -4,13 +4,10 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
-import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import org.json.JSONObject
 
 /** Human-chart-trained audio-to-actions model. Invoked only by background song preparation. */
@@ -24,7 +21,7 @@ class ManiaChartModel(private val context: Context) {
         val environment = OrtEnvironment.getEnvironment()
         val events = ArrayList<ManiaTokens.Event>()
         val duration = (audio.duration * 1000).toInt()
-        ModelSessions.use(model("chart-encoder-int8.onnx"), model("chart-decoder-int8.onnx")) { (encoder, decoder) ->
+        ModelSessions.use(context, model("chart-encoder-int8.onnx"), model("chart-decoder-int8.onnx")) { (encoder, decoder) ->
             for (window in 0 until audio.windows) {
                 if (Thread.currentThread().isInterrupted) throw InterruptedException()
                 val features = audio.input(window)
@@ -76,28 +73,11 @@ class ManiaChartModel(private val context: Context) {
         } finally { previous?.close() }
     }
 
-    private fun model(name: String): File {
-        val info = manifest.getJSONObject("files").getJSONObject(name)
-        val hash = info.getString("sha256")
-        val directory = File(context.noBackupFilesDir, "chart-model").apply { mkdirs() }
-        val destination = File(directory, "${hash.take(12)}-$name")
-        synchronized(LOCK) {
-            if (destination.length() != info.getLong("bytes")) {
-                val temporary = File(destination.path + ".part")
-                try {
-                    context.assets.open("chart/$name").use { source -> temporary.outputStream().use(source::copyTo) }
-                    check(temporary.length() == info.getLong("bytes")) { "The chart model could not be prepared." }
-                    Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                } finally { temporary.delete() }
-            }
-            directory.listFiles()?.filter { it != destination && it.name.endsWith("-$name") }?.forEach { it.delete() }
-        }
-        return destination
-    }
+    private fun model(name: String) =
+        ModelSessions.Model("chart/$name", manifest.getJSONObject("files").getJSONObject(name).getLong("bytes"))
 
     companion object {
         const val METHOD = "human-mania-mini-int8-v1"
         const val DIFFICULTY = 1.5
-        private val LOCK = Any()
     }
 }

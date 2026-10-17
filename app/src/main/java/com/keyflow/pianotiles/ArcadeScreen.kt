@@ -55,7 +55,7 @@ internal fun MainActivity.addArcadeCards(body: LinearLayout) {
 }
 
 /** Every song from every playlist, plus the built-in songs. */
-private fun MainActivity.arcadePool(): List<Arcade.Entry> = Arcade.pool(library.savedPlaylists() + store.demo())
+private fun MainActivity.arcadePool(): List<Arcade.Entry> = Arcade.pool(library.readPlaylists() + store.demo())
 
 private fun MainActivity.showArcade(mode: Arcade.Mode) {
     Preparation.wake(this)
@@ -138,7 +138,8 @@ private fun MainActivity.nextStage() {
     val op = ++operation
     // Catalog reads and readiness checks are disk work, including when advancing mid-run.
     io.execute {
-        val ready = arcadePool().filter { it.demo || store.offline(it.song) }
+        val offline = store.offlineCheck()
+        val ready = arcadePool().filter { offline(it.song) }
         val entry = arcadeSongs.pick(ready, r.recent, kotlin.random.Random.Default)
             ?.also { arcadeSongs.played(it.id) }
         if (entry == null) {

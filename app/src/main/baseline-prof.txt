@@ -1,0 +1,3 @@
+# Compile all of Keyflow ahead of time, so screens and the game don't stutter while ART warms up.
+HSPLcom/keyflow/pianotiles/**->**(**)**
+Lcom/keyflow/pianotiles/**;

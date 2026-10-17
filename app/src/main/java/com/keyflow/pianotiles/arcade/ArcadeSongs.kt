@@ -14,7 +14,7 @@ class ArcadeSongs(context: Context) {
     private val library = OnDeviceLibrary.get(context.applicationContext)
 
     fun pick(ready: List<Arcade.Entry>, recent: Collection<String>, random: Random): Arcade.Entry? {
-        val playlists = library.savedPlaylists()
+        val playlists = library.readPlaylists()
         val allowed = Arcade.eligible(Arcade.pool(playlists), Arcade.distances(playlists, store::completed)).map { it.id }.toSet()
         // Locked levels are only played when nothing else, not even a built-in song, is ready.
         val choices = ready.filter { it.id in allowed }.ifEmpty { ready.filter { it.demo } }.ifEmpty { ready }

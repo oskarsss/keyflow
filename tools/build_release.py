@@ -44,14 +44,18 @@ def main():
 
     subprocess.run([str(root / "gradlew"), ":app:assembleRelease", "--console=plain"],
                    cwd=root, env=environment, check=True)
+    # Phones get the plain name; the emulator build is marked.
+    outputs = root / "app/build/outputs/apk/release"
     apk = artifacts / f"keyflow-{version}.apk"
-    shutil.copyfile(root / "app/build/outputs/apk/release/app-release.apk", apk)
+    emulator = artifacts / f"keyflow-{version}-x86_64.apk"
+    shutil.copyfile(outputs / "app-arm64-v8a-release.apk", apk)
+    shutil.copyfile(outputs / "app-x86_64-release.apk", emulator)
     source = artifacts / f"keyflow-{version}-source.tar.gz"
     subprocess.run(["git", "archive", "--format=tar.gz", f"--prefix=keyflow-{version}/",
                     f"--output={source}", "HEAD"], cwd=root, check=True)
-    checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in (apk, source))
+    checksums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in (apk, emulator, source))
     (artifacts / "SHA256SUMS").write_text(checksums)
-    print(f"Signed APK: {apk}")
+    print(f"Signed APKs: {apk}, {emulator}")
     print(f"Source archive: {source}")
     print(checksums, end="")
 

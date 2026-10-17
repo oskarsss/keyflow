@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -8,6 +9,10 @@
     <application android:label="Keyflow" android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme" android:allowBackup="false" android:extractNativeLibs="true"
         android:supportsRtl="true" android:usesCleartextTraffic="false">
+        <!-- ONNX Runtime's start-up hook loads the model engine on every launch to send usage
+             telemetry. Keyflow keeps everything on the phone and loads the engine only to chart. -->
+        <provider android:name="ai.onnxruntime.TelemetryInitializer"
+            android:authorities="${applicationId}.onnxruntime_telemetry_initializer" tools:node="remove" />
         <service android:name=".library.DownloadService" android:exported="false" android:foregroundServiceType="dataSync" />
         <activity android:name=".MainActivity" android:exported="true"
             android:screenOrientation="portrait">
