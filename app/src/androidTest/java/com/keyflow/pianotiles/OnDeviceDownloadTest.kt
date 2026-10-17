@@ -5,6 +5,9 @@ import android.os.SystemClock
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.keyflow.pianotiles.library.LibraryStore
+import com.keyflow.pianotiles.library.OnDeviceLibrary
+import com.keyflow.pianotiles.library.Preparation
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -38,21 +41,17 @@ class OnDeviceDownloadTest {
         val state = library.snapshot(playlist.getString("id"))!!
         assertEquals("ready", state.getJSONArray("songs").getJSONObject(0).getString("status"))
         val id = playlist.getString("id")
-        // Exercise the real foreground queue and its per-playlist limit after leaving the UI.
+        // Exercise the real worker after leaving the UI, with the smallest Download ahead window.
         val second = playlist.getJSONArray("songs").getJSONObject(1)
-        val third = playlist.getJSONArray("songs").getJSONObject(2)
         store.songFile(second, "mp3").delete()
-        store.songFile(third, "mp3").delete()
-        store.prefs.edit().putInt("preload.$id", 0).apply()
-        library.setPreload(id, 0)
+        library.setPreload(id, LibraryStore.MIN_PRELOAD)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity {
-                store.prefs.edit().putInt("preload.$id", 2).apply()
-                library.setPreload(id, 2)
-                DownloadService.start(it, id)
+                Preparation.wake(it)
                 it.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
             }
-            val deadline = SystemClock.elapsedRealtime() + 120000
+            // The locked level after the next one is always among the wanted songs.
+            val deadline = SystemClock.elapsedRealtime() + 600_000
             while (!store.offline(second)) {
                 check(SystemClock.elapsedRealtime() < deadline) { "Background song download timed out" }
                 val current = library.snapshot(id)!!.getJSONArray("songs").getJSONObject(1)
@@ -60,11 +59,17 @@ class OnDeviceDownloadTest {
                 Thread.sleep(250)
             }
             assertTrue(store.songFile(second, "jpg").isFile)
-            assertFalse("The queue must stop at the requested two songs", store.offline(third))
             assertEquals("ready", library.snapshot(id)!!.getJSONArray("songs").getJSONObject(1).getString("status"))
+            // The worker stops once nothing wanted is missing, and prepares nothing else.
+            while (Preparation.current != null || Preparation.next(context) != null) {
+                check(SystemClock.elapsedRealtime() < deadline) { "The worker did not finish the wanted songs" }
+                Thread.sleep(500)
+            }
+            val wanted = Preparation.wantedIds(context)
+            val songs = library.snapshot(id)!!.getJSONArray("songs")
+            for (i in 0 until songs.length()) if (store.offline(songs.getJSONObject(i)))
+                assertTrue("Only wanted songs are prepared", songs.getJSONObject(i).getString("id") in wanted)
         }
-        store.prefs.edit().putInt("preload.$id", 1).apply()
-        val saved = library.setPreload(id, 1)
-        assertEquals(1, saved.getInt("preloadCount"))
+        assertEquals(3, library.setPreload(id, 3).getInt("preloadCount"))
     }
 }

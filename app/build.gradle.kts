@@ -6,8 +6,8 @@ android {
         applicationId = "com.keyflow.pianotiles"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.6.2"
+        versionCode = 12
+        versionName = "1.6.3"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate exported Kotlin frontend features against external human beat annotations.
 
-Requires numpy, scipy and onnxruntime. See docs/chart-generation.md for the two-stage Kotlin
+Requires numpy, scipy and onnxruntime. See docs/beat-tracking.md for the two-stage Kotlin
 export. Audio and reference labels are evaluation inputs, never packaged with the application.
 """
 import argparse
@@ -90,18 +90,14 @@ def main():
         (args.directory / f"{name}.rhythm.json").write_text(json.dumps(output))
         result = {"track": name, "seconds": round(time.monotonic() - started, 3), "frames": len(spect)}
         reference = args.directory / f"{name}.beats"
-        baseline = args.directory / f"{name}.baseline.json"
         if reference.exists():
             labels = np.loadtxt(reference, ndmin=2)
-            result["new_beats"] = score(labels[:, 0], beats)
-            result["new_downbeats"] = score(labels[labels[:, 1] == 1, 0], downbeats)
-            if baseline.exists():
-                old = json.loads(baseline.read_text())
-                result["old_beats"] = score(labels[:, 0], old["beats"])
+            result["beats"] = score(labels[:, 0], beats)
+            result["downbeats"] = score(labels[labels[:, 1] == 1, 0], downbeats)
         results.append(result)
         print(json.dumps(result), flush=True)
     report = {"tracks": results}
-    for field in ["old_beats", "new_beats", "new_downbeats"]:
+    for field in ["beats", "downbeats"]:
         values = [r[field]["f1"] for r in results if field in r]
         if values:
             report[field + "_mean_f1"] = float(np.mean(values))

@@ -1,0 +1,106 @@
+package com.keyflow.pianotiles.game
+
+import com.keyflow.pianotiles.chart.ThumbChart
+import kotlin.random.Random
+
+/**
+ * Cosmetic rewards and hazards preserve the chart's authored rhythmic events. Every layout remains
+ * playable with two thumbs.
+ */
+object TileVariety {
+    class Layout(val notes: List<GameSession.Note>, val key: Int)
+
+    private val permutations: List<List<Int>> = (0..3).flatMap { a ->
+        (0..3).filter { it != a }.flatMap { b ->
+            (0..3).filter { it != a && it != b }.map { c -> listOf(a, b, c, 6 - a - b - c) }
+        }
+    }
+
+    /** Change lanes each play, retaining rhythm, chords and collision-free gesture paths. */
+    fun shuffleLanes(source: List<GameSession.Note>, random: Random, previous: Int = -1): Layout {
+        fun safe(map: List<Int>): Boolean {
+            for ((i, note) in source.withIndex()) {
+                if (note.duration <= 0) continue
+                val occupied = minOf(map[note.lane], map[note.endLane])..maxOf(map[note.lane], map[note.endLane])
+                val original = minOf(note.lane, note.endLane)..maxOf(note.lane, note.endLane)
+                var first = i
+                while (first > 0 && source[first - 1].time == note.time) first--
+                for (j in first until source.size) {
+                    if (j == i) continue
+                    val other = source[j]
+                    if (other.time >= note.time + note.duration) break
+                    val remapped = minOf(map[other.lane], map[other.endLane])..maxOf(map[other.lane], map[other.endLane])
+                    val old = minOf(other.lane, other.endLane)..maxOf(other.lane, other.endLane)
+                    if (occupied.first <= remapped.last && remapped.first <= occupied.last &&
+                        !(original.first <= old.last && old.first <= original.last)) return false
+                }
+            }
+            return true
+        }
+        val allowed = permutations.indices.filter { index ->
+            val map = permutations[index]
+            map[0] / 2 == map[1] / 2 && map[2] / 2 == map[3] / 2 && safe(map)
+        }
+        val old = permutations.getOrNull(previous)
+        val used = source.flatMap { listOf(it.lane, it.endLane) }.toSet()
+        val key = allowed.filter { candidate -> old == null || used.any { permutations[candidate][it] != old[it] } }
+            .ifEmpty { allowed }.random(random)
+        val map = permutations[key]
+        return Layout(source.map { GameSession.Note(it.time, map[it.lane], it.kind, it.duration, map[it.endLane]) }
+            .sortedWith(compareBy({ it.time }, { it.lane })), key)
+    }
+
+    fun decorate(source: List<GameSession.Note>, level: Int, seed: Int): List<GameSession.Note> {
+        val random = Random(seed)
+        val notes =
+            source
+                .sortedWith(compareBy({ it.time }, { it.lane }))
+                .map { GameSession.Note(it.time, it.lane, it.kind, it.duration, it.endLane) }
+                .toMutableList()
+        val bombChance = if (level >= 2) minOf(.14, .06 + level * .01) else 0.0
+        var lastGold = -100
+        val extra = ArrayList<GameSession.Note>()
+        for (i in notes.indices) {
+            val note = notes[i]
+            if (note.kind != "tap") continue
+            val chord = notes.getOrNull(i - 1)?.time == note.time || notes.getOrNull(i + 1)?.time == note.time
+            if (!chord && i >= 6 && i - lastGold >= 10 && random.nextDouble() < 1 / 12.0) {
+                notes[i] = GameSession.Note(note.time, note.lane, GameSession.GOLD)
+                lastGold = i
+                continue
+            }
+            if (!chord && note.time >= 5 && random.nextDouble() < bombChance) {
+                free(notes + extra, note.time, .5, note.lane, random)?.let {
+                    extra.add(GameSession.Note(note.time, it, GameSession.AVOID))
+                }
+            }
+        }
+        if (notes.size >= 16 && notes.none { it.kind == GameSession.GOLD }) {
+            val i = (6 until notes.size).firstOrNull { n ->
+                notes[n].kind == "tap" && notes.getOrNull(n - 1)?.time != notes[n].time &&
+                    notes.getOrNull(n + 1)?.time != notes[n].time
+            }
+            if (i != null) notes[i] = GameSession.Note(notes[i].time, notes[i].lane, GameSession.GOLD)
+        }
+        return ThumbChart.forPlay((notes + extra).sortedWith(compareBy({ it.time }, { it.lane })))
+    }
+
+    private fun free(
+        notes: List<GameSession.Note>,
+        time: Double,
+        margin: Double,
+        except: Int,
+        random: Random,
+    ): Int? {
+        val open =
+            (0..3).filter { lane ->
+                lane != except &&
+                    notes.none { n ->
+                        time >= n.time - margin &&
+                            time <= n.time + n.duration + margin &&
+                            lane in minOf(n.lane, n.endLane)..maxOf(n.lane, n.endLane)
+                    }
+            }
+        return if (open.isEmpty()) null else open[random.nextInt(open.size)]
+    }
+}

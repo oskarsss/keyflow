@@ -3,6 +3,8 @@ package com.keyflow.pianotiles
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import com.keyflow.pianotiles.library.LibraryStore
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith

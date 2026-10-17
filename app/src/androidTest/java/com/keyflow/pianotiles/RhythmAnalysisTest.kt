@@ -1,10 +1,16 @@
 package com.keyflow.pianotiles
 
-import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.core.app.ActivityScenario
 import android.view.View
 import android.view.ViewGroup
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.keyflow.pianotiles.chart.BeatThis
+import com.keyflow.pianotiles.chart.ManiaChartModel
+import com.keyflow.pianotiles.chart.MusicFeatures
+import com.keyflow.pianotiles.game.GameView
+import com.keyflow.pianotiles.library.LibraryStore
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import java.io.File
 import kotlin.math.abs
 import org.json.JSONArray
@@ -20,22 +26,18 @@ class RhythmAnalysisTest {
     private val context get() = instrumentation.targetContext
 
     @Test
-    fun nativeNeuralInferenceAndFrontendFollowKnownPianoAttacks() {
+    fun nativeBeatModelFollowsKnownPianoAttacks() {
         val audio = File(context.cacheDir, "neural-original-test.wav")
         try {
             context.assets.open("demo/first-light.wav").use { input -> audio.outputStream().use(input::copyTo) }
             val runtime = OnDeviceLibrary.get(context).runtime
             val features = runtime.audioSamples(audio, "neural-demo-features", MusicFeatures.RATE, MusicFeatures::readPcm)
-            val samples = runtime.audioSamples(audio, "neural-demo-onsets", AudioChart::readPcm)
             val rhythm = BeatThis(context).analyze(features)
             assertTrue("No neural pulse found", rhythm.beats.size > 20)
-            val chart = MusicalChart.generate(samples, features, rhythm, "neural-original-test")
-            assertTrue(chart.notes.size > 20)
+            // The demo plays a piano note on every beat at 84 BPM from 1.5 s.
             val attacks = (0 until 48).map { 1.5 + it * 60.0 / 84 }
-            for (note in chart.notes) assertTrue("Tile at ${note.time} misses the original piano attack",
-                attacks.minOf { abs(it - note.time) } < .060)
-            assertTrue(chart.notes.groupBy { it.time }.values.all { it.size <= 2 })
-            assertTrue(chart.sections.isNotEmpty())
+            for (beat in rhythm.beats) assertTrue("Beat at $beat misses the original piano attack",
+                attacks.minOf { abs(it - beat) } < .060)
         } finally { audio.delete() }
     }
 
@@ -51,7 +53,7 @@ class RhythmAnalysisTest {
         val id = "rhythm-evaluation-${System.nanoTime()}"
         val songs = JSONArray(sources.mapIndexed { index, file -> JSONObject().put("id", "rhythm%05d".format(index))
             .put("title", file.nameWithoutExtension).put("artist", "Test corpus").put("status", "pending") })
-        val playlist = JSONObject().put("id", id).put("title", "Rhythm evaluation").put("preloadCount", 0).put("songs", songs)
+        val playlist = JSONObject().put("id", id).put("title", "Rhythm evaluation").put("songs", songs)
         val report = JSONArray()
         library.save(playlist)
         try {

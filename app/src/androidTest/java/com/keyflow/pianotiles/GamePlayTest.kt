@@ -10,6 +10,12 @@ import android.widget.TextView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.keyflow.pianotiles.arcade.Arcade
+import com.keyflow.pianotiles.chart.MusicFeatures
+import com.keyflow.pianotiles.game.GameSession
+import com.keyflow.pianotiles.game.GameView
+import com.keyflow.pianotiles.library.LibraryStore
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import java.io.File
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
@@ -289,9 +295,9 @@ class GamePlayTest {
         try {
             context.assets.open("demo/first-light.wav").use { input -> audio.outputStream().use(input::copyTo) }
             val runtime = OnDeviceLibrary.get(context).runtime
-            val samples = runtime.audioSamples(audio, "priority-audio-test", AudioChart::readPcm)
-            assertTrue(samples.duration > 30)
-            assertTrue(samples.flux.isNotEmpty())
+            val features = runtime.audioSamples(audio, "priority-audio-test", MusicFeatures.RATE, MusicFeatures::readPcm)
+            assertTrue(features.duration > 30)
+            assertTrue(features.frames > 0)
             val version = runtime.execute(
                 com.keyflow.pianotiles.downloader.YTDLRequest("https://www.youtube.com").addOption("--version"),
                 "priority-python-test", 30,
@@ -327,7 +333,7 @@ class GamePlayTest {
             })
             store.chartFile(song).writeText(org.json.JSONObject().put("duration", 8).put("notes", notes).toString())
             val playlist = org.json.JSONObject().put("id", "offline-arcade-test").put("title", "Offline arcade test")
-                .put("preloadCount", 0).put("songs", org.json.JSONArray().put(song))
+                .put("songs", org.json.JSONArray().put(song))
             library.save(playlist)
             store.save(playlist)
             for (mode in Arcade.Mode.values()) {
@@ -369,8 +375,9 @@ class GamePlayTest {
             if (data) shell("svc data enable")
             root.deleteRecursively()
             if (backup.exists()) check(backup.renameTo(root)) else root.mkdirs()
-            for (extension in listOf("mp3", "chart${LibraryStore.CHART_VERSION}.json")) store.songFile(song, extension).delete()
-            store.prefs.edit().putString("playlistId", previousSelection).remove("arcade.reserve").apply()
+            store.songFile(song, "mp3").delete()
+            store.chartFile(song).delete()
+            store.prefs.edit().putString("playlistId", previousSelection).apply()
         }
     }
 
@@ -381,7 +388,7 @@ class GamePlayTest {
         assumeTrue("Optional on-device playlist test", !playlistUrl.isNullOrBlank())
         val library = OnDeviceLibrary.get(context)
         val playlist = library.importPlaylist(playlistUrl!!, "playtest-import") {}
-        library.setPreload(playlist.getString("id"), 1)
+        library.setPreload(playlist.getString("id"), LibraryStore.MIN_PRELOAD)
         val store = LibraryStore(context)
         store.save(playlist)
         val first = playlist.getJSONArray("songs").getJSONObject(0)

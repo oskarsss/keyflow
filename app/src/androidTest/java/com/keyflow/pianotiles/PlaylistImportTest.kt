@@ -6,6 +6,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.keyflow.pianotiles.downloader.YTDLRequest
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject

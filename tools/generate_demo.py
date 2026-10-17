@@ -5,9 +5,6 @@ import math
 from pathlib import Path
 import struct
 import wave
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "companion"))
-from server import gesture_chart
 
 ROOT = Path(__file__).resolve().parents[1] / "app/src/main/assets/demo"
 TRACKS = [
@@ -15,6 +12,28 @@ TRACKS = [
     ("violet-hour", "Violet Hour", "Find your flow", 104, [57, 60, 64, 69, 67, 64, 60, 64]),
     ("afterglow", "Afterglow", "A little more momentum", 124, [62, 66, 69, 74, 73, 69, 66, 69]),
 ]
+
+
+def gesture_chart(notes: list[dict]) -> list[dict]:
+    """Group a few neighboring notes into readable hold/slide phrases."""
+    output, i = [], 0
+    while i < len(notes):
+        note = dict(notes[i])
+        # Leave opening notes simple, then introduce an occasional sustained gesture.
+        if i >= 10 and i % 12 == 10 and i + 2 < len(notes):
+            note.update(kind="hold", duration=round(notes[i+2]["time"]-note["time"], 3), endLane=note["lane"])
+            i += 3
+        elif i >= 16 and i % 18 == 16 and i + 2 < len(notes):
+            end_lane = notes[i+2]["lane"]
+            if end_lane == note["lane"]:
+                end_lane = (end_lane+1) % 4
+            note.update(kind="slide", duration=round(notes[i+2]["time"]-note["time"], 3), endLane=end_lane)
+            i += 3
+        else:
+            note["kind"] = "tap"
+            i += 1
+        output.append(note)
+    return output
 
 
 def generate():
@@ -48,7 +67,6 @@ def generate():
             {"time": round(t,3), "lane": [0,2,1,3,2,0,3,1][i % 8]} for i,t in enumerate(times)]}
         if sid != "first-light":
             chart["notes"] = gesture_chart(chart["notes"])
-        chart["version"] = 2
         (ROOT/(sid+".json")).write_text(json.dumps(chart))
         songs.append({"id": sid, "title": title, "artist": "Keyflow Originals", "subtitle": subtitle,
                       "duration": duration, "bpm": bpm, "status": "ready", "demo": True})

@@ -4,6 +4,11 @@ import android.os.Debug
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.keyflow.pianotiles.chart.BeatThis
+import com.keyflow.pianotiles.chart.ChartAudio
+import com.keyflow.pianotiles.chart.ManiaChartModel
+import com.keyflow.pianotiles.chart.MusicFeatures
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import java.io.File
 import kotlin.math.abs
 import org.json.JSONArray

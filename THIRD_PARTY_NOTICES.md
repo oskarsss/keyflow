@@ -1,9 +1,8 @@
 # Third-party credits
 
-Keyflow uses two small Kotlin adaptations from [sandeepsj/piano-falling-tiles](https://github.com/sandeepsj/piano-falling-tiles), inspected at commit `3f1fa5e862ac7ca6a583103e3a094e42e493cc94`:
+Keyflow uses a small Kotlin adaptation from [sandeepsj/piano-falling-tiles](https://github.com/sandeepsj/piano-falling-tiles), inspected at commit `3f1fa5e862ac7ca6a583103e3a094e42e493cc94`:
 
-- `engine/TileScheduler.kt` → `TileScheduler.kt`: audio-clock position calculation, adapted to four lanes and the app's header.
-- `rendering/ParticleSystem.kt` → `HitParticles.kt`: fixed particle slots, adapted to Android Canvas and screen density.
+- `rendering/ParticleSystem.kt` → `game/HitParticles.kt`: fixed particle slots, adapted to Android Canvas and screen density.
 
 The game, Android interface, audio charts, and original demo music were created for this project, apart from the adaptations described here. [jatinsachdevame/Piano-Tiles](https://github.com/jatinsachdevame/Piano-Tiles) was reviewed for its lightweight native approach and persistent high scores; no code or audio was copied from it. [atillaturkmen/piano-tiles](https://github.com/atillaturkmen/piano-tiles) was referenced for adjustable speed as a gameplay idea; no code or assets were incorporated from that repository.
 
