@@ -83,6 +83,8 @@ class DownloadService : Service() {
         var shown = 0L
         var checked = System.currentTimeMillis()
         var stepStarted = SystemClock.elapsedRealtime()
+        // Rests aren't part of how long the song takes, which the wait estimates learn from.
+        var rested = 0L
         // A song wanted for one reason can become more urgent while it is prepared.
         var reason = item.reason
         // Between steps of the analysis: rest while a game is played, then give way when the player
@@ -91,8 +93,10 @@ class DownloadService : Service() {
         // few seconds.
         fun shouldYield(): Boolean {
             if (Preparation.waiting?.second == songId) reason = PreparationPlan.Reason.WAITING
-            rest(reason, SystemClock.elapsedRealtime() - stepStarted)
+            val resting = SystemClock.elapsedRealtime()
+            rest(reason, resting - stepStarted)
             stepStarted = SystemClock.elapsedRealtime()
+            rested += stepStarted - resting
             if (Preparation.waiting.let { it != null && it.second != songId }) return true
             val now = System.currentTimeMillis()
             if (reason == PreparationPlan.Reason.WAITING || now - checked < YIELD_CHECK_MS) return false
@@ -111,7 +115,8 @@ class DownloadService : Service() {
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(message, fraction))
                 }
             }
-            if (timing != null) Preparation.finished(this, timing)
+            if (timing != null)
+                Preparation.finished(this, OnDeviceLibrary.Timing(timing.downloadMs, timing.chartMs - rested, timing.seconds))
             Preparation.release(songId)
             null
         } catch (_: OnDeviceLibrary.Yielded) {
