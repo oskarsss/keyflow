@@ -331,7 +331,8 @@ class GameSession(
         const val RECOVER_STREAK = 25
         const val GOLD_BONUS = 250
         const val CHORD_BONUS = 100
-        const val CHORD_WINDOW = .065
+        /** How far apart a chord's taps may land and still count as together. */
+        const val CHORD_WINDOW = .035
         const val DODGED = 5
         const val GOLD = "gold"
         const val AVOID = "avoid"

@@ -26,6 +26,12 @@ class ChordBonusTest {
         staggered.press(3, 1.07, 2)
         assertEquals(2, staggered.hits)
         assertEquals(0, staggered.chordBonuses)
+        // Taps 50 ms apart are two hits, not one chord.
+        val loose = GameSession(listOf(GameSession.Note(1.0, 0), GameSession.Note(1.0, 3)))
+        loose.press(0, .98, 1)
+        loose.press(3, 1.03, 2)
+        assertEquals(2, loose.hits)
+        assertEquals(0, loose.chordBonuses)
         val missed = GameSession(listOf(GameSession.Note(1.0, 0), GameSession.Note(1.0, 3)))
         missed.press(0, 1.0, 1)
         missed.advance(1.3)
