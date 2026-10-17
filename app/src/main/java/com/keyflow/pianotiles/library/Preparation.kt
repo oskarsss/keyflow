@@ -186,6 +186,66 @@ object Preparation {
         }
     }
 
+    /** A song the worker still has to prepare, as the download queue shows it. */
+    class Queued(val item: PreparationPlan.Item, val playlist: String, val title: String, val state: QueueState)
+
+    sealed interface QueueState {
+        /** Being prepared now: the stage, the whole preparation's fraction and the time left. */
+        class Preparing(val stage: String, val fraction: Double, val leftMs: Long) : QueueState
+        /** Waiting its turn; ready in about [readyInMs]. */
+        class InLine(val readyInMs: Long) : QueueState
+        /** Not taken until something changes, such as Wi-Fi coming back. */
+        class Held(val reason: String) : QueueState
+    }
+
+    /**
+     * Every wanted song that isn't ready yet, in the order the worker takes them, with the song
+     * in progress first and songs held back last. Locked levels keep their masked titles.
+     */
+    fun queue(context: Context): List<Queued> {
+        val store = LibraryStore(context)
+        val inputs = inputs(context)
+        val now = System.currentTimeMillis()
+        val online = connected(context)
+        val waitFor = bigDownloadsWaitFor(context)
+        val time = PreparationTime(store.prefs)
+        val library = OnDeviceLibrary.get(context)
+        val working = current
+        val playlists = inputs.playlists.associateBy { it.optString("id") }
+        // A level is unlocked up to the first one not cleared.
+        val unlocked = HashMap<String, Set<String>>()
+        fun unlocked(playlistId: String, songId: String) = songId in unlocked.getOrPut(playlistId) {
+            val songs = playlists[playlistId]?.optJSONArray("songs") ?: return@getOrPut emptySet()
+            val open = (0 until songs.length()).firstOrNull { !store.completed(songs.getJSONObject(it)) } ?: songs.length()
+            (0..minOf(open, songs.length() - 1)).map { songs.getJSONObject(it).optString("id") }.toSet()
+        }
+        var clock = 0L
+        return PreparationPlan.wanted(inputs).filter { !inputs.ready(it.song) }
+            .sortedByDescending { it.id == working?.songId }
+            .map { item ->
+                val preparing = library.preparing(item.id)?.takeIf { item.id == working?.songId }
+                val state = when {
+                    preparing != null -> {
+                        val left = time.remaining(item.song, preparing.second)
+                        clock += left
+                        QueueState.Preparing(preparing.first, preparing.second, left)
+                    }
+                    item.reason != PreparationPlan.Reason.WAITING && PreparationPlan.recentlyFailed(item.song, now) ->
+                        QueueState.Held("Couldn't prepare · tries again in ${describe(PreparationPlan.retryAt(item.song) - now)}")
+                    !online && item.reason != PreparationPlan.Reason.WAITING -> QueueState.Held("Waits for an internet connection")
+                    PreparationPlan.big(item.reason) && waitFor != null -> QueueState.Held("Waits for $waitFor")
+                    else -> {
+                        clock += time.estimate(item.song, library.downloaded(item.id))
+                        QueueState.InLine(clock)
+                    }
+                }
+                val title = item.song.optString("title").ifBlank { "Untitled song" }
+                Queued(item, playlists[item.playlistId]?.optString("title").orEmpty(),
+                    SongTitle.display(title, unlocked(item.playlistId, item.id)), state)
+            }
+            .sortedBy { it.state is QueueState.Held }
+    }
+
     /** "about 3 min" style wording for a wait. */
     fun describe(ms: Long): String = if (ms < 60_000) "under a minute" else "about ${(ms + 30_000) / 60_000} min"
 

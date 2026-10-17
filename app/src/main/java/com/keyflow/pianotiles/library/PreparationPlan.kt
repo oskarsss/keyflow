@@ -108,9 +108,11 @@ object PreparationPlan {
         else -> 2
     }
 
-    fun recentlyFailed(song: JSONObject, now: Long) =
-        song.optString("status") == "error" &&
-            now - song.optLong("failedAt", 0) < if (song.optBoolean("connection")) CONNECTION_RETRY_MS else RETRY_MS
+    fun recentlyFailed(song: JSONObject, now: Long) = song.optString("status") == "error" && now < retryAt(song)
+
+    /** When a failed song is tried again. */
+    fun retryAt(song: JSONObject) =
+        song.optLong("failedAt", 0) + if (song.optBoolean("connection")) CONNECTION_RETRY_MS else RETRY_MS
 
     /** A playlist's Download ahead window from its next level; nothing once every level is cleared. */
     fun window(playlist: JSONObject, completed: (JSONObject) -> Boolean): List<JSONObject> {

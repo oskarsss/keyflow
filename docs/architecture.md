@@ -73,6 +73,10 @@ them all.
   level in the plan. `PreparationTime` learns from finished songs how long a download takes on
   this phone and how long charting takes per second of audio, so long songs count for more and a
   kept download counts only its chart.
+- *Settings › Download queue* lists every wanted song that isn't on the phone yet, in the
+  worker's order with the song in progress first, each with its playlist, why it is wanted and
+  when it will be ready. Songs held back (failed, or waiting for Wi-Fi, a charger or a
+  connection) come last with the reason. Locked levels keep their masked titles.
 - Smart storage removes songs not played within the retention period (30 days by default). It
   spares the playing song, every song the plan wants and playlists set to *Keep downloaded songs*.
   Scores, unlocks and playlists are never removed.

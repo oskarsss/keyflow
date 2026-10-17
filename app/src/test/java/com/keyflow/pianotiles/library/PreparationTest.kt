@@ -76,4 +76,45 @@ class PreparationTest {
         assertNull(Preparation.bigDownloadsWaitFor(context))
         assertEquals(Reason.AHEAD, Preparation.next(context)?.reason)
     }
+
+    @Test
+    fun theQueueListsMissingSongsInOrderWithTheirWaitAndMasksLockedTitles() {
+        val library = OnDeviceLibrary.get(context)
+        val raw = JSONObject().put("title", "Mix").put("entries", JSONArray((0 until 10).map {
+            JSONObject().put("id", "songid%05d".format(it)).put("title", "Secret song $it").put("duration", 200)
+        }))
+        val playlist = library.createPlaylist(raw, Random(2))
+        store.save(playlist)
+        network(unmetered = false)
+        val songs = playlist.getJSONArray("songs")
+        // The next level failed a moment ago.
+        val next = songs.getJSONObject(0)
+        next.put("status", "error").put("failedAt", System.currentTimeMillis())
+        library.save(playlist)
+        val queue = Preparation.queue(context)
+        val wanted = PreparationPlan.wanted(Preparation.inputs(context)).map { it.id }
+        assertEquals(wanted.toSet(), queue.map { it.item.id }.toSet())
+        // Songs in line keep the worker's order; the ones held back come last.
+        val held = queue.dropWhile { it.state !is Preparation.QueueState.Held }
+        assertTrue(held.all { it.state is Preparation.QueueState.Held })
+        assertEquals(wanted.filter { id -> queue.none { it.item.id == id && it.state is Preparation.QueueState.Held } },
+            queue.take(queue.size - held.size).map { it.item.id })
+        val first = queue.first { it.item.id == next.getString("id") }
+        assertEquals("Mix", first.playlist)
+        assertEquals(next.getString("title"), first.title)
+        assertTrue((first.state as Preparation.QueueState.Held).reason.startsWith("Couldn't prepare"))
+        // The level after next is still locked, so its title stays masked.
+        val locked = queue.first { it.item.reason == Reason.LOCKED }
+        assertNotEquals(songs.getJSONObject(1).getString("title"), locked.title)
+        // Songs in line are ready one after another; Download ahead waits for Wi-Fi.
+        val waits = queue.mapNotNull { (it.state as? Preparation.QueueState.InLine)?.readyInMs }
+        assertTrue(waits.isNotEmpty())
+        assertEquals(waits.sorted(), waits)
+        assertTrue(queue.filter { it.item.reason == Reason.AHEAD }
+            .all { (it.state as Preparation.QueueState.Held).reason == "Waits for Wi-Fi" })
+        // Songs on the phone leave the queue.
+        store.songFile(locked.item.song, "mp3").writeText("audio")
+        store.chartFile(locked.item.song).writeText("{}")
+        assertTrue(Preparation.queue(context).none { it.item.id == locked.item.id })
+    }
 }

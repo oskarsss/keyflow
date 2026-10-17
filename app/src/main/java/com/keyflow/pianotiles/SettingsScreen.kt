@@ -68,6 +68,10 @@ internal fun MainActivity.showSettings() {
     val downloads = section(body, "Storage and downloads")
     val stats = ui.text("Checking storage…", 13f, Palette.MUTED).apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
     ui.fill(downloads, stats)
+    divider(downloads)
+    actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download queue", "Songs waiting to be downloaded and prepared", Palette.TEXT) {
+        showQueue()
+    }
     // Each playlist's share; its own download settings are a tap away.
     val perPlaylist = ui.column()
     ui.fill(downloads, perPlaylist)

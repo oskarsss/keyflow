@@ -22,7 +22,7 @@ import com.keyflow.pianotiles.ui.Ui
 import java.util.concurrent.Executors
 import org.json.JSONObject
 
-internal enum class Screen { WELCOME, IMPORT, HOME, PLAYLISTS, PLAYLIST, SETTINGS, ARCADE, LOADING, GAME, RESULTS }
+internal enum class Screen { WELCOME, IMPORT, HOME, PLAYLISTS, PLAYLIST, SETTINGS, QUEUE, ARCADE, LOADING, GAME, RESULTS }
 
 /** A slice of a song played inside an arcade run. */
 internal class Stage(val startMs: Int, val endMs: Int)
@@ -134,6 +134,7 @@ class MainActivity : Activity() {
             Screen.GAME -> if (pauseOverlay != null) hidePause() else showPause()
             Screen.HOME -> @Suppress("DEPRECATION") super.onBackPressed()
             Screen.PLAYLIST -> leavePlaylistSettings()
+            Screen.QUEUE -> showSettings()
             Screen.IMPORT -> {
                 operation++
                 cancelImport()
