@@ -22,7 +22,9 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
 
 ## From playlist to level
 
-1. **Import.** yt-dlp reads the playlist's song list. Valid, unique songs are shuffled once into a
+1. **Import.** On the first start, adding a playlist is the only way in. Once it is saved, the
+   warm-up page offers the built-in songs while the worker prepares its first levels, and their
+   home screen shows when the playlist is ready. yt-dlp reads the playlist's song list. Valid, unique songs are shuffled once into a
    new playlist file. Songs already on the phone are reused, with their downloaded titles.
 2. **Plan.** Playlists and Arcade say which songs they want; nothing keeps a queue of requests.
    `PreparationPlan` orders every wanted song in steps:

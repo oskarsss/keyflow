@@ -8,11 +8,16 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import com.keyflow.pianotiles.library.PlaylistUrl
+import com.keyflow.pianotiles.library.Preparation
 import com.keyflow.pianotiles.ui.Glyph
 import com.keyflow.pianotiles.ui.Palette
 import com.keyflow.pianotiles.ui.Ui
 import org.json.JSONObject
 
+/**
+ * Adding a playlist. On the first start it is the welcome page and can't be skipped: a playlist
+ * comes first, so its songs prepare in the background while the player warms up.
+ */
 internal fun MainActivity.showAddPlaylist() {
     val first = store.playlist == null
     val body =
@@ -27,12 +32,14 @@ internal fun MainActivity.showAddPlaylist() {
         )
     body.addView(artwork(0, 28), LinearLayout.LayoutParams(-1, dp(if (first) 210 else 160)))
     ui.gap(body, 28)
-    ui.fill(body, ui.title(if (first) "Keyflow" else "Add a playlist", 30f))
+    ui.fill(body, ui.title(if (first) "Welcome to Keyflow" else "Add a playlist", 30f))
     ui.gap(body, 8)
     ui.fill(
         body,
         ui.text(
-            "Copy songs from a YouTube Music playlist into your own shuffled level list.",
+            if (first) "Turn a YouTube Music playlist into a path of piano levels. Add one to begin: " +
+                "its songs become levels on this phone while you warm up with three built-in songs."
+            else "Copy songs from a YouTube Music playlist into your own shuffled level list.",
             15f,
             Palette.MUTED,
         ).apply { setLineSpacing(dp(3).toFloat(), 1f) },
@@ -90,13 +97,9 @@ internal fun MainActivity.showAddPlaylist() {
     ui.gap(body, 12)
     ui.fill(body, ui.button("Import playlist", Ui.Style.PRIMARY) { submit() })
     if (first) {
-        ui.gap(body, 8)
-        ui.fill(
-            body,
-            ui.button("Play the built-in songs", Ui.Style.GHOST, Glyph.Kind.MUSIC) {
-                runCatching { selectPlaylist(store.demo()) }.onFailure(::showError)
-            },
-        )
+        ui.gap(body, 14)
+        ui.fill(body, ui.text("In YouTube Music, open a playlist and tap Share › Copy link.", 13f, Palette.FAINT)
+            .apply { gravity = android.view.Gravity.CENTER_HORIZONTAL })
     }
 }
 
@@ -179,7 +182,7 @@ private fun MainActivity.saveImportedPlaylist(raw: JSONObject, run: Int) {
                 activeImport = null
                 result.onSuccess { playlist ->
                     pendingUrl = ""
-                    selectPlaylist(playlist)
+                    if (store.playlist == null) showWarmUp(playlist) else selectPlaylist(playlist)
                 }.onFailure { error ->
                     showAddPlaylist()
                     showError(error)
@@ -210,4 +213,54 @@ internal fun MainActivity.selectPlaylist(playlist: JSONObject) {
     stopGame()
     store.save(playlist)
     showHome()
+}
+
+/**
+ * After the first import: the playlist's songs are being prepared, so the built-in songs are
+ * offered to play meanwhile, with an estimate of when its first level is ready.
+ */
+internal fun MainActivity.showWarmUp(playlist: JSONObject) {
+    // The playlist is chosen now, so a restart skips the welcome and keeps preparing it.
+    store.save(playlist)
+    Preparation.wake(this)
+    val id = playlist.getString("id")
+    val body = page(Screen.WARMUP, null)
+    body.addView(artwork(2, 28), LinearLayout.LayoutParams(-1, dp(210)))
+    ui.gap(body, 28)
+    ui.fill(body, ui.title("Getting “${playlist.optString("title")}” ready", 28f))
+    ui.gap(body, 10)
+    val status = ui.text("Checking…", 15f, Palette.ACCENT, ui.medium)
+    ui.fill(body, status)
+    ui.gap(body, 8)
+    ui.fill(body, ui.text("Its songs download and become levels on this phone, even with the screen off. " +
+        "Warm up with three built-in songs in the meantime.", 15f, Palette.MUTED)
+        .apply { setLineSpacing(dp(3).toFloat(), 1f) })
+    ui.gap(body, 24)
+    ui.fill(body, ui.button("Warm up with The first notes", Ui.Style.PRIMARY, Glyph.Kind.PLAY) {
+        runCatching { selectPlaylist(store.demo()) }.onFailure(::showError)
+    })
+    ui.gap(body, 8)
+    ui.fill(body, ui.button("Go to my playlist", Ui.Style.GHOST) {
+        library.snapshot(id)?.let(::selectPlaylist) ?: showHome()
+    })
+    showWarmUpStatus(scroll, id, status)
+}
+
+private fun MainActivity.showWarmUpStatus(page: android.widget.ScrollView?, id: String, status: TextView) {
+    io.execute {
+        val state = runCatching { Preparation.readiness(this)[id] }.getOrNull()
+        handler.post {
+            if (scroll !== page || isDestroyed) return@post
+            status.text = playlistStatus(state)
+            handler.postDelayed({ showWarmUpStatus(page, id, status) }, 3000)
+        }
+    }
+}
+
+/** How soon a playlist's next level can be played, in a short line. */
+internal fun playlistStatus(state: Preparation.Readiness?) = when (state) {
+    is Preparation.Readiness.Waiting -> "First level playable in ${Preparation.describe(state.ms)}"
+    Preparation.Readiness.Offline -> "Waiting for an internet connection"
+    Preparation.Readiness.Failed -> "Its first song couldn't be prepared · retrying soon"
+    else -> "Ready to play"
 }

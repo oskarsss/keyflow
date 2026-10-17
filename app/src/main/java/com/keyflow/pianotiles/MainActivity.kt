@@ -22,7 +22,7 @@ import com.keyflow.pianotiles.ui.Ui
 import java.util.concurrent.Executors
 import org.json.JSONObject
 
-internal enum class Screen { WELCOME, IMPORT, HOME, PLAYLISTS, PLAYLIST, SETTINGS, QUEUE, ARCADE, LOADING, GAME, RESULTS }
+internal enum class Screen { WELCOME, IMPORT, WARMUP, HOME, PLAYLISTS, PLAYLIST, SETTINGS, QUEUE, ARCADE, LOADING, GAME, RESULTS }
 
 /** A slice of a song played inside an arcade run. */
 internal class Stage(val startMs: Int, val endMs: Int)

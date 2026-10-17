@@ -4,6 +4,7 @@ A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist
 
 ## Play
 
+- **First start.** Keyflow asks for a playlist before anything else. While its first levels download and are built, you can warm up with three built-in songs, *The first notes*; a card on their home screen says when your playlist is ready and switches to it.
 - **Playlists.** Paste a public or unlisted playlist link, or share one to Keyflow from YouTube Music. Each import becomes a new local playlist with its songs shuffled once; the order then stays fixed. Downloads, scores and unlocks are shared per song across playlists. Imports of more than 100 songs ask for confirmation, because of storage.
 - **Journey.** Each song is a level on a winding map. Clear a level to unlock the next; locked covers are blurred and their titles partly masked. Long songs play one of up to five continuous, bar-aligned highlights of up to 2½ minutes, a different one from last time, or the full song if chosen in Settings.
 - **Gameplay.** Tap tiles, hold green ribbons, follow blue slides, tap linked chords together, catch gold tiles for points and a life, and avoid bombs. New tile kinds appear gradually. You have eight lives: a miss costs one and a 25-hit streak earns one back. Combos raise a multiplier up to ×4. Hit 75% of the notes to clear a level; stars come from accuracy. Each play uses a new two-thumb lane layout with the same rhythm.

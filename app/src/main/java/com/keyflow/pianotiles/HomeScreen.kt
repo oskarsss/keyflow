@@ -94,6 +94,7 @@ internal fun MainActivity.showHome() {
     ui.gap(body, 10)
     ui.fill(body, ui.meter(if (total == 0) 0f else done / total.toFloat()))
     ui.gap(body, 20)
+    if (isOriginals) addPlaylistStatus(body)
 
     val next = nextIndex()
     if (next >= 0) addHero(body, next, songs.getJSONObject(next))
@@ -113,6 +114,52 @@ internal fun MainActivity.showHome() {
     addJourney(body, songs, next)
     startPolling(immediately = true)
     Preparation.wake(this)
+}
+
+/**
+ * While the built-in songs are open, a card follows the player's own playlist: when its next
+ * level will be playable, and a tap to switch to it.
+ */
+private fun MainActivity.addPlaylistStatus(body: LinearLayout) {
+    val card = ui.row().apply {
+        setPadding(dp(16), dp(14), dp(14), dp(14))
+        ui.pressable(this, ui.rounded(Palette.SURFACE, 20, Palette.STROKE), 20)
+        visibility = View.GONE
+    }
+    val title = ui.oneLine(ui.text("", 15f, Palette.TEXT, ui.medium))
+    val status = ui.text("", 12.5f, Palette.MUTED)
+    val labels = ui.column().apply {
+        addView(title)
+        ui.gap(this, 4)
+        addView(status)
+    }
+    ui.weight(card, labels)
+    card.addView(ui.icon(Glyph.Kind.CHEVRON_RIGHT, Palette.MUTED, 20))
+    ui.fill(body, card)
+    ui.gap(body, 20)
+    val page = scroll
+    fun refresh() {
+        io.execute {
+            val playlists = library.readPlaylists()
+            val readiness = runCatching { Preparation.readiness(this) }.getOrDefault(emptyMap())
+            // The playlist still getting ready matters most; otherwise the first one.
+            val shown = playlists.firstOrNull { playlist ->
+                readiness[playlist.optString("id")].let { it != null && it != Preparation.Readiness.Ready }
+            } ?: playlists.firstOrNull()
+            handler.post {
+                if (scroll !== page || isDestroyed || shown == null) return@post
+                val id = shown.optString("id")
+                val state = readiness[id]
+                card.visibility = View.VISIBLE
+                title.text = "Your playlist · ${shown.optString("title")}"
+                status.text = playlistStatus(state)
+                status.setTextColor(if (state == Preparation.Readiness.Ready || state == null) Palette.MINT else Palette.MUTED)
+                card.setOnClickListener { library.snapshot(id)?.let(::selectPlaylist) }
+                if (state != null && state != Preparation.Readiness.Ready) handler.postDelayed(::refresh, 3000)
+            }
+        }
+    }
+    refresh()
 }
 
 private fun MainActivity.addHero(body: LinearLayout, index: Int, song: JSONObject) {
