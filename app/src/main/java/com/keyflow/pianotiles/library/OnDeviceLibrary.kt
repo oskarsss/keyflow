@@ -40,6 +40,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         private set
 
     init {
+        // Songs that failed as unavailable before such songs were taken out go now.
+        for (song in savedPlaylists().flatMap(::songsOf))
+            if (song.optString("status") == "error" && gone(song.optString("error"))) dropUnavailable(song)
         // A process restart cannot have any active downloads. Repair persisted transient states.
         for (playlist in savedPlaylists()) {
             var changed = false
@@ -97,6 +100,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         val songs = mutableListOf<JSONObject>()
         for (entry in importEntries(raw)) {
             val sid = entry.getString("id")
+            if (store.unavailable(sid)) continue
             val song =
                 JSONObject()
                     .put("id", sid)
@@ -432,7 +436,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             return System.currentTimeMillis() - started
         } catch (error: Throwable) {
             File(folder, "download.log").writeText(error.message ?: "Download failed")
-            failed(playlistId, songId, error, connectionLost(error))
+            if (gone(error.message.orEmpty())) {
+                folder.deleteRecursively()
+                dropUnavailable(song)
+            } else failed(playlistId, songId, error, connectionLost(error))
             throw error
         } finally {
             preparing.remove(songId)
@@ -473,6 +480,25 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             analysed.remove(songId)
         }
     }
+
+    /**
+     * Takes a song YouTube won't serve out of every playlist, so it can't hold up a journey, and
+     * remembers it so imports leave it out. The player is told on the home screen.
+     */
+    private fun dropUnavailable(song: JSONObject) = synchronized(lock) {
+        val songId = song.optString("id")
+        android.util.Log.i("Keyflow", "Taking unavailable $songId out of the playlists")
+        store.markUnavailable(songId, song.optString("title").ifBlank { "A song" })
+        for (playlist in savedPlaylists()) {
+            val songs = songsOf(playlist)
+            val kept = songs.filter { it.optString("id") != songId }
+            // A playlist keeps its last song, so it never ends up empty.
+            if (kept.size != songs.size && kept.isNotEmpty()) save(playlist.put("songs", JSONArray(kept)))
+        }
+    }
+
+    /** Whether yt-dlp's [message] says YouTube won't serve the song at all, rather than just now. */
+    private fun gone(message: String) = UNAVAILABLE.containsMatchIn(message) && !message.contains("try again later", ignoreCase = true)
 
     private fun failed(playlistId: String, songId: String, error: Throwable, connection: Boolean) =
         updateSong(playlistId, songId) {
@@ -585,6 +611,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         private val revisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
         private val SONG_ID = Regex("[A-Za-z0-9_-]{11}")
         private val INDEX_NAME = Regex("[A-Za-z0-9_-]{1,80}\\.json")
+        private val UNAVAILABLE = Regex("Video unavailable|This video is (not|no longer) available|Private video|" +
+            "video has been removed|not (made )?available in your country|account associated with this video has been terminated|" +
+            "confirm your age|members-only|Join this channel", RegexOption.IGNORE_CASE)
         private val NETWORK_ERROR = Regex("Network is unreachable|timed out|Temporary failure in name resolution|" +
             "Name or service not known|Connection (refused|reset|aborted)|No address associated", RegexOption.IGNORE_CASE)
 

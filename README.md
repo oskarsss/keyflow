@@ -17,7 +17,7 @@ A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist
 
 Charts come from the human-chart-trained [Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini) mania model, adapted to run locally and conditioned on beats from [Beat This!](https://github.com/CPJKU/beat_this). See [the chart model](docs/chart-model.md) and [beat tracking](docs/beat-tracking.md).
 
-Each song has a 20-minute / 100 MB limit. Private playlists that need an account are not supported. Use audio you have permission to download and play. If YouTube blocks requests or changes, retry or use **Update downloader** in Settings, which verifies the official yt-dlp nightly's SHA-256 before installing it.
+Each song has a 20-minute / 100 MB limit. Songs YouTube won't play in your country, or at all, are taken out of the playlist with a note saying which. Private playlists that need an account are not supported. Use audio you have permission to download and play. If YouTube blocks requests or changes, retry or use **Update downloader** in Settings, which verifies the official yt-dlp nightly's SHA-256 before installing it.
 
 ## Install
 

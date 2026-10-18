@@ -110,6 +110,23 @@ class LibraryStore(private val context: Context) {
     /** [offline] for many songs at once; see [files]. */
     fun offlineCheck(): (JSONObject) -> Boolean = files()::playable
 
+    /** Whether YouTube refused to serve this song; imports leave such songs out. */
+    fun unavailable(songId: String) = songId in prefs.getStringSet(UNAVAILABLE, emptySet()).orEmpty()
+
+    /** Remembers a song YouTube refused, and that the player still has to be told about it. */
+    fun markUnavailable(songId: String, title: String) = synchronized(LibraryStore::class.java) {
+        val untold = JSONArray(prefs.getString(UNAVAILABLE_UNTOLD, "[]")).put(title)
+        prefs.edit().putStringSet(UNAVAILABLE, prefs.getStringSet(UNAVAILABLE, emptySet()).orEmpty() + songId)
+            .putString(UNAVAILABLE_UNTOLD, untold.toString()).commit()
+    }
+
+    /** Titles of songs taken out since the player was last told, once. */
+    fun takeUnavailableNotice(): List<String> = synchronized(LibraryStore::class.java) {
+        val untold = JSONArray(prefs.getString(UNAVAILABLE_UNTOLD, "[]"))
+        if (untold.length() > 0) prefs.edit().remove(UNAVAILABLE_UNTOLD).commit()
+        (0 until untold.length()).map(untold::getString)
+    }
+
     fun markPlayed(song: JSONObject, now: Long = System.currentTimeMillis()) {
         prefs.edit().putLong(key(song) + ".lastPlayed", now).apply()
     }
@@ -167,6 +184,8 @@ class LibraryStore(private val context: Context) {
 
     companion object {
         private val UNSAFE_ID = Regex("[^A-Za-z0-9_-]")
+        private const val UNAVAILABLE = "songs.unavailable"
+        private const val UNAVAILABLE_UNTOLD = "songs.unavailableUntold"
 
         /** The built-in songs' playlist, which ships with the app instead of being imported. */
         const val ORIGINALS = "keyflow-originals"

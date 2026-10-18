@@ -164,8 +164,12 @@ private fun MainActivity.waitForSong(
                 handler.post {
                     if (operation != run || isDestroyed) return@post
                     if (updated == null) {
+                        // YouTube wouldn't serve it, so it left the playlist; home says so.
+                        Preparation.release(song.optString("id"))
+                        if (playlist != null) store.save(playlist)
                         showHome()
-                        showError(IllegalStateException("Song not found. Import the playlist again."))
+                        if (!store.unavailable(song.optString("id")))
+                            showError(IllegalStateException("Song not found. Import the playlist again."))
                         return@post
                     }
                     val downloaded = store.downloaded(updated)

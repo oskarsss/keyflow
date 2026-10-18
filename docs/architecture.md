@@ -41,7 +41,9 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    are made while the next songs download, and without a connection. A finished download wakes
    the level worker. While either works, the service keeps the processor awake, and Wi-Fi at
    full speed during a download, so locking the phone doesn't stall them; each song renews the
-   hold for at most 30 minutes, and it ends when both are done. The service stops when both are done; `Preparation.wake` starts it when
+   hold for at most 30 minutes, and it ends when both are done. Android allows this kind of
+   service six hours a day; when they are used up the workers stop after their current step and
+   the service ends at once, and opening the app starts them again. The service stops when both are done; `Preparation.wake` starts it when
    something wanted is missing, and again when the phone gets a connection, Wi-Fi or a charger
    while the app is open. A plan reads each playlist only after it changes and checks which songs
    are downloaded, playable and fully prepared from one listing of the songs folder, so large
@@ -49,7 +51,10 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    Steps 4 and 5 download only on Wi-Fi (an unmetered network) by default; a charger, when the
    player asks for one, holds back both their downloads and their levels.
    A song that failed waits 15 minutes before it is tried again (one minute when the connection
-   dropped). A song that fails on its own is passed over; two lost connections in a row end the
+   dropped). A song YouTube won't serve at all (unavailable, private, removed, blocked in the
+   country, age-restricted or members-only, but not its "try again later" rate limit) is taken
+   out of every playlist so it can't hold up a journey, remembered so imports leave it out, and
+   named once in a dialog on the home screen. A song that fails on its own is passed over; two lost connections in a row end the
    download worker's pass. A level being made gives way to a downloaded song from step 1, or,
    from steps 3–5, to a playlist's downloaded next or locked level, such as the new locked level
    after a clear; from steps 4–5 it also stops when the charger goes. Its download stays.

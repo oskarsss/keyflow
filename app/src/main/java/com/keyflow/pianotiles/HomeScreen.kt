@@ -25,6 +25,7 @@ private fun MainActivity.nextIndex(): Int {
 internal fun MainActivity.showHome() {
     if (isDestroyed || store.playlist == null) return
     scheduleCleanup()
+    tellUnavailable()
     // Rows start from the saved copy; the first poll brings them up to date off the main thread.
     shownRevision = -1
     shownSongs = emptyList()
@@ -214,6 +215,19 @@ private fun MainActivity.addHero(body: LinearLayout, index: Int, song: JSONObjec
     hero = play to status
     heroCheckedAt = 0L
     ui.fill(body, frame)
+}
+
+/** Says once which songs YouTube wouldn't serve and were taken out of the playlists. */
+internal fun MainActivity.tellUnavailable() {
+    val titles = store.takeUnavailableNotice()
+    if (titles.isEmpty()) return
+    android.app.AlertDialog.Builder(this)
+        .setTitle(if (titles.size == 1) "A song isn't on YouTube" else "${titles.size} songs aren't on YouTube")
+        .setMessage(titles.joinToString("\n") { "• $it" } + "\n\nYouTube won't play " +
+            (if (titles.size == 1) "it" else "them") + " here, so " + (if (titles.size == 1) "it was" else "they were") +
+            " taken out of your playlists and the next song takes " + (if (titles.size == 1) "its" else "their") + " place.")
+        .setPositiveButton("OK", null)
+        .show()
 }
 
 /** Whole-song preparation: the download, then the on-device chart, as one progress value. */

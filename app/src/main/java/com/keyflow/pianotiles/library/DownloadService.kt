@@ -33,6 +33,8 @@ class DownloadService : Service() {
     @Volatile private var levelText: String? = null
     @Volatile private var levelFraction = 0.0
     private var shown = 0L
+    /** Android ended the service's background time; the workers finish what they're on and stop. */
+    @Volatile private var stopped = false
     // A foreground service keeps the app alive but not the processor: with the screen off the
     // phone would sleep and stall both workers, so the processor stays on while either works.
     private lateinit var awake: PowerManager.WakeLock
@@ -54,11 +56,30 @@ class DownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION, notification())
+        // Android allows this kind of service six hours a day, renewed when the app is opened.
+        try {
+            startForeground(NOTIFICATION, notification())
+        } catch (refused: IllegalStateException) {
+            android.util.Log.w("Keyflow", "Preparation can't run in the background now", refused)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         lastStart = startId
         downloads.start()
         levels.start()
         return START_NOT_STICKY
+    }
+
+    /**
+     * The day's background time is used up: both workers stop after their current step and the
+     * service ends at once, as Android requires. Opening the app starts them again.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        android.util.Log.w("Keyflow", "Background time for today is used up; preparation continues when the app is opened")
+        stopped = true
+        if (awake.isHeld) awake.release()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     /**
@@ -85,11 +106,11 @@ class DownloadService : Service() {
         private fun drain() {
             // Songs that failed in this pass without being marked, so they can't repeat endlessly.
             val skip = HashSet<String>()
-            while (again.getAndSet(false)) {
+            while (again.getAndSet(false) && !stopped) {
                 var failures = 0
                 // Two lost connections in a row would fail every download, so the rest wait for a
                 // connection. A song that fails on its own is marked and passed over.
-                while (failures < 2) {
+                while (failures < 2 && !stopped) {
                     val item = runCatching { next(this@DownloadService, skip) }.getOrNull() ?: break
                     // Each song renews the hold, so a stuck worker can't keep the phone awake for long.
                     awake.acquire(AWAKE_MS)
@@ -111,7 +132,7 @@ class DownloadService : Service() {
     }
 
     private fun stopWhenDone() {
-        if (downloads.running.get() || levels.running.get()) return
+        if (stopped || downloads.running.get() || levels.running.get()) return
         if (awake.isHeld) awake.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelfResult(lastStart)
@@ -160,6 +181,7 @@ class DownloadService : Service() {
         // worker, or Download ahead and Download all must wait for a charger. The plan is read at
         // most every few seconds.
         fun shouldYield(): Boolean {
+            if (stopped) return true
             if (Preparation.waiting?.second == songId) reason = PreparationPlan.Reason.WAITING
             val resting = SystemClock.elapsedRealtime()
             rest(reason, resting - stepStarted)
