@@ -69,7 +69,7 @@ internal fun MainActivity.showSettings() {
     val stats = ui.text("Checking storage…", 13f, Palette.MUTED).apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
     ui.fill(downloads, stats)
     divider(downloads)
-    actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download queue", "Songs waiting to be downloaded and prepared", Palette.TEXT) {
+    actionRow(downloads, Glyph.Kind.DOWNLOAD, "Song queues", "Songs waiting to download, and levels waiting to be made", Palette.TEXT) {
         showQueue()
     }
     // Each playlist's share; its own download settings are a tap away.
@@ -112,7 +112,7 @@ internal fun MainActivity.showSettings() {
         }
     }
     divider(downloads)
-    settingRow(downloads, "Download ahead only while charging", "And Download all") {
+    settingRow(downloads, "Download ahead only while charging", "And Download all, including making their levels") {
         toggle(prefs.getBoolean(Preparation.CHARGING_ONLY, false), "Download ahead only while charging") {
             prefs.edit().putBoolean(Preparation.CHARGING_ONLY, it).apply()
             Preparation.wake(this)

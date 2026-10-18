@@ -54,31 +54,40 @@ class PreparationTest {
         network(unmetered = false)
         charging(false)
         // On mobile data the next level still comes first, as Wi-Fi only is the default.
-        assertEquals(Reason.NEXT, Preparation.next(context)?.reason)
-        for (item in PreparationPlan.wanted(Preparation.inputs(context)).filterNot { PreparationPlan.big(it.reason) }) {
-            store.songFile(item.song, "mp3").writeText("audio")
-            store.chartFile(item.song).writeText("{}")
-        }
+        assertEquals(Reason.NEXT, Preparation.nextDownload(context)?.reason)
+        assertNull(Preparation.nextLevel(context))
+        val small = PreparationPlan.wanted(Preparation.inputs(context)).filterNot { PreparationPlan.big(it.reason) }
+        for (item in small) store.songFile(item.song, "mp3").writeText("audio")
+        // Downloaded songs get their levels made on any connection.
+        assertEquals(small.first().id, Preparation.nextLevel(context)?.id)
+        for (item in small) store.chartFile(item.song).writeText("{}")
         assertEquals("Wi-Fi", Preparation.bigDownloadsWaitFor(context))
-        assertNull(Preparation.next(context))
+        assertNull(Preparation.nextDownload(context))
         network(unmetered = true)
-        assertEquals(Reason.AHEAD, Preparation.next(context)?.reason)
+        val ahead = Preparation.nextDownload(context)!!
+        assertEquals(Reason.AHEAD, ahead.reason)
 
         store.prefs.edit().putBoolean(Preparation.CHARGING_ONLY, true).commit()
         assertEquals("a charger", Preparation.bigDownloadsWaitFor(context))
-        assertNull(Preparation.next(context))
+        assertNull(Preparation.nextDownload(context))
+        // A charger also holds back making their levels; Wi-Fi doesn't.
+        store.songFile(ahead.song, "mp3").writeText("audio")
+        assertEquals("a charger", Preparation.bigLevelsWaitFor(context))
+        assertNull(Preparation.nextLevel(context))
         charging(true)
-        assertEquals(Reason.AHEAD, Preparation.next(context)?.reason)
+        assertEquals(Reason.AHEAD, Preparation.nextDownload(context)?.reason)
+        assertEquals(ahead.id, Preparation.nextLevel(context)?.id)
 
         store.prefs.edit().putBoolean(Preparation.CHARGING_ONLY, false).putBoolean(Preparation.WIFI_ONLY, false).commit()
         network(unmetered = false)
         charging(false)
         assertNull(Preparation.bigDownloadsWaitFor(context))
-        assertEquals(Reason.AHEAD, Preparation.next(context)?.reason)
+        assertEquals(Reason.AHEAD, Preparation.nextDownload(context)?.reason)
+        assertEquals(ahead.id, Preparation.nextLevel(context)?.id)
     }
 
     @Test
-    fun theQueueListsMissingSongsInOrderWithTheirWaitAndMasksLockedTitles() {
+    fun theQueuesListSongsToDownloadAndLevelsToMakeInOrderWithTheirWaitAndMaskLockedTitles() {
         val library = OnDeviceLibrary.get(context)
         val raw = JSONObject().put("title", "Mix").put("entries", JSONArray((0 until 10).map {
             JSONObject().put("id", "songid%05d".format(it)).put("title", "Secret song $it").put("duration", 200)
@@ -91,30 +100,36 @@ class PreparationTest {
         val next = songs.getJSONObject(0)
         next.put("status", "error").put("failedAt", System.currentTimeMillis())
         library.save(playlist)
-        val queue = Preparation.queue(context)
+        // The locked level is downloaded, with a quick level to play meanwhile.
+        val locked = songs.getJSONObject(1)
+        store.songFile(locked, "mp3").writeText("audio")
+        store.quickChartFile(locked).writeText("{}")
+        val queues = Preparation.queues(context)
         val wanted = PreparationPlan.wanted(Preparation.inputs(context)).map { it.id }
-        assertEquals(wanted.toSet(), queue.map { it.item.id }.toSet())
+        assertEquals(wanted.toSet() - locked.getString("id"), queues.downloads.map { it.item.id }.toSet())
+        assertEquals(listOf(locked.getString("id")), queues.levels.map { it.item.id })
         // Songs in line keep the worker's order; the ones held back come last.
-        val held = queue.dropWhile { it.state !is Preparation.QueueState.Held }
+        val held = queues.downloads.dropWhile { it.state !is Preparation.QueueState.Held }
         assertTrue(held.all { it.state is Preparation.QueueState.Held })
-        assertEquals(wanted.filter { id -> queue.none { it.item.id == id && it.state is Preparation.QueueState.Held } },
-            queue.take(queue.size - held.size).map { it.item.id })
-        val first = queue.first { it.item.id == next.getString("id") }
+        assertEquals(wanted.filter { id -> queues.downloads.any { it.item.id == id && it.state !is Preparation.QueueState.Held } },
+            queues.downloads.take(queues.downloads.size - held.size).map { it.item.id })
+        val first = queues.downloads.first { it.item.id == next.getString("id") }
         assertEquals("Mix", first.playlist)
         assertEquals(next.getString("title"), first.title)
-        assertTrue((first.state as Preparation.QueueState.Held).reason.startsWith("Couldn't prepare"))
+        assertTrue((first.state as Preparation.QueueState.Held).reason.startsWith("Couldn't download"))
         // The level after next is still locked, so its title stays masked.
-        val locked = queue.first { it.item.reason == Reason.LOCKED }
-        assertNotEquals(songs.getJSONObject(1).getString("title"), locked.title)
-        // Songs in line are ready one after another; Download ahead waits for Wi-Fi.
-        val waits = queue.mapNotNull { (it.state as? Preparation.QueueState.InLine)?.readyInMs }
+        val level = queues.levels.single()
+        assertNotEquals(locked.getString("title"), level.title)
+        assertTrue(level.quick)
+        // Downloads follow one another; Download ahead waits for Wi-Fi.
+        val waits = queues.downloads.mapNotNull { (it.state as? Preparation.QueueState.InLine)?.doneInMs }
         assertTrue(waits.isNotEmpty())
         assertEquals(waits.sorted(), waits)
-        assertTrue(queue.filter { it.item.reason == Reason.AHEAD }
+        assertTrue(queues.downloads.filter { it.item.reason == Reason.AHEAD }
             .all { (it.state as Preparation.QueueState.Held).reason == "Waits for Wi-Fi" })
-        // Songs on the phone leave the queue.
-        store.songFile(locked.item.song, "mp3").writeText("audio")
-        store.chartFile(locked.item.song).writeText("{}")
-        assertTrue(Preparation.queue(context).none { it.item.id == locked.item.id })
+        // The quick level counts as ready to play, and a full level takes the song out of the queues.
+        assertEquals(Preparation.Readiness.Failed, Preparation.readiness(context)[playlist.getString("id")])
+        store.chartFile(locked).writeText("{}")
+        assertTrue(Preparation.queues(context).levels.isEmpty())
     }
 }

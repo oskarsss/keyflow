@@ -5,9 +5,10 @@ import kotlin.random.Random
 import org.json.JSONObject
 
 /**
- * Every song the app wants on the phone, in the order the single preparation worker takes them.
- * Playlists and Arcade only say what they want; the worker keeps no queue of its own and reads a
- * fresh plan before each song, so progress or a changed setting counts straight away.
+ * Every song the app wants on the phone, in the order the two workers take them: one downloads
+ * songs, the other makes their levels. Playlists and Arcade only say what they want; the workers
+ * keep no queue of their own and read a fresh plan before each song, so progress or a changed
+ * setting counts straight away.
  */
 object PreparationPlan {
     /** Why a song is wanted, most urgent first. */
@@ -32,7 +33,11 @@ object PreparationPlan {
         val id: String get() = song.optString("id")
     }
 
-    /** What the plan is made from. [playlists] are the imported ones; [current] goes first. */
+    /**
+     * What the plan is made from. [playlists] are the imported ones; [current] goes first. A song
+     * is [ready] to play with a full or quick level, [downloaded] once its audio is on the phone
+     * and [prepared] once its full level is made.
+     */
     class Inputs(
         val playlists: List<JSONObject>,
         val current: String?,
@@ -43,6 +48,8 @@ object PreparationPlan {
         val now: Long = System.currentTimeMillis(),
         /** An Arcade run is being played. */
         val arcadePlaying: Boolean = false,
+        val downloaded: (JSONObject) -> Boolean = ready,
+        val prepared: (JSONObject) -> Boolean = ready,
     )
 
     /** Download ahead and Download all, which can wait for Wi-Fi or a charger. */
@@ -84,16 +91,20 @@ object PreparationPlan {
     }
 
     /**
-     * The wanted songs still to prepare. A song that failed recently waits for [RETRY_MS] so a
+     * The wanted songs still to download. A song that failed recently waits for [RETRY_MS] so a
      * broken song can't hold up the rest, except when the player is waiting for it.
      */
-    fun pending(items: List<Item>, ready: (JSONObject) -> Boolean, now: Long): List<Item> =
-        items.filter { item ->
-            !ready(item.song) && (item.reason == Reason.WAITING || !recentlyFailed(item.song, now))
-        }
+    fun toDownload(items: List<Item>, inputs: Inputs): List<Item> =
+        items.filter { !inputs.downloaded(it.song) && retries(it, inputs.now) }
+
+    /** The wanted songs whose audio is on the phone but whose full level isn't made yet. */
+    fun toPrepare(items: List<Item>, inputs: Inputs): List<Item> =
+        items.filter { inputs.downloaded(it.song) && !inputs.prepared(it.song) && retries(it, inputs.now) }
+
+    private fun retries(item: Item, now: Long) = item.reason == Reason.WAITING || !recentlyFailed(item.song, now)
 
     /**
-     * Whether the song being prepared gives way to [first], the plan's first song now. A running
+     * Whether the song whose level is being made gives way to [first], the first song now. A running
      * Arcade game's next song stops anything else, and every playlist's next two levels stop a
      * song for Arcade's buffer, Download ahead or Download all, such as the new locked level
      * after a clear. Songs of the same step don't interrupt each other.

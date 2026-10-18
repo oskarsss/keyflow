@@ -7,7 +7,7 @@ import kotlin.random.Random
 
 /**
  * Chooses Arcade's songs and remembers what it played, so the songs played longest ago come back
- * first. Getting songs ready is the preparation worker's job; Arcade is one of its requesters.
+ * first. Getting songs ready is the preparation workers' job; Arcade is one of its requesters.
  */
 class ArcadeSongs(context: Context) {
     private val store = LibraryStore(context.applicationContext)

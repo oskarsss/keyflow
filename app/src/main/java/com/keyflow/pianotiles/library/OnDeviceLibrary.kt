@@ -8,7 +8,9 @@ import com.keyflow.pianotiles.chart.ChartAudio
 import com.keyflow.pianotiles.chart.ChartStructure
 import com.keyflow.pianotiles.chart.ManiaChartModel
 import com.keyflow.pianotiles.chart.MusicFeatures
+import com.keyflow.pianotiles.chart.MusicalRhythm
 import com.keyflow.pianotiles.chart.PreparedChart
+import com.keyflow.pianotiles.chart.QuickChart
 import com.keyflow.pianotiles.downloader.NativeRuntime
 import com.keyflow.pianotiles.downloader.YTDLRequest
 import java.io.File
@@ -25,9 +27,13 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     private val store = LibraryStore(context)
     private val indexes = File(context.filesDir, "playlists").apply { mkdirs() }
     private val lock = Any()
-    private val cacheLock = Any()
+    /** Held while a song downloads, and while a level is made; cleanup takes both. */
+    private val downloadLock = Any()
+    private val chartLock = Any()
     private val playing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val preparing = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Double>>()
+    /** The beat of songs whose full level is being made, for a quick level asked for meanwhile. */
+    private val analysed = java.util.concurrent.ConcurrentHashMap<String, Pair<MusicFeatures, MusicalRhythm>>()
     /** [readPlaylists]' parsed playlists with the revision and file time they were read at. */
     private val parsed = java.util.concurrent.ConcurrentHashMap<String, Pair<Pair<Long, Long>, JSONObject>>()
     @Volatile internal var cacheGeneration = 0L
@@ -183,9 +189,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
      * Disk cleanup never changes playlists, scores or progression. It spares a playing song,
      * every song the preparation plan wants and playlists set to keep their downloads.
      */
-    fun pruneUnused(days: Int, now: Long = System.currentTimeMillis()): Int = synchronized(cacheLock) {
+    fun pruneUnused(days: Int, now: Long = System.currentTimeMillis()): Int = cleanup {
         require(days in 1..365)
-        if (!store.prefs.getBoolean("smartStorage", true)) return@synchronized 0
+        if (!store.prefs.getBoolean("smartStorage", true)) return@cleanup 0
         val cutoff = now - days * 86_400_000L
         val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
         var removed = 0
@@ -216,7 +222,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         removed
     }
 
-    /** Whether the preparation worker should bring every song of this playlist onto the phone. */
+    /** Whether the preparation workers should bring every song of this playlist onto the phone. */
     fun setDownloadAll(id: String, all: Boolean): JSONObject = update(id) { it.put("downloadAll", all) }
 
     fun rename(id: String, title: String): JSONObject = update(id) { it.put("title", title.trim().take(MAX_TITLE)) }
@@ -232,7 +238,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         for (i in 0 until songs.length()) {
             val song = songs.getJSONObject(i)
             if (song.optString("id") in kept || song.optBoolean("demo")) continue
-            for (file in listOf(store.songFile(song, "mp3"), store.chartFile(song), store.songFile(song, "json"), store.songFile(song, "jpg")))
+            for (file in listOf(store.songFile(song, "mp3"), store.chartFile(song), store.quickChartFile(song), store.songFile(song, "jpg")))
                 file.delete()
         }
     }
@@ -241,8 +247,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
      * Frees a playlist's downloads, except songs another playlist also has, the next level and
      * the locked one after it, and a song that is playing. Scores and unlocks are kept.
      */
-    fun removeDownloads(id: String): Int = synchronized(cacheLock) {
-        val playlist = snapshot(id) ?: return@synchronized 0
+    fun removeDownloads(id: String): Int = cleanup {
+        val playlist = snapshot(id) ?: return@cleanup 0
         val shared = savedPlaylists().filter { it.optString("id") != id }.flatMap(::songsOf).map { it.optString("id") }.toSet()
         val next = store.essential(playlist).map { it.optString("id") }.toSet()
         val files = File(context.filesDir, "songs").listFiles().orEmpty().groupBy { it.name.substringBefore('.') }
@@ -300,11 +306,11 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         it.put("preloadCount", count)
     }
 
-    /** Space taken by downloaded songs, their charts and covers, and downloads kept for reuse. */
+    /** Space taken by downloaded songs, their levels and covers, and unfinished downloads. */
     fun downloadedBytes(): Long = listOf(File(context.filesDir, "songs"), File(context.cacheDir, "downloads"))
         .sumOf { folder -> folder.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
 
-    fun clearDownloads() = synchronized(cacheLock) {
+    fun clearDownloads() = cleanup {
         cacheGeneration++
         File(context.filesDir, "songs").deleteRecursively()
         File(context.cacheDir, "downloads").deleteRecursively()
@@ -322,48 +328,50 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     }
 
     /**
-     * Downloads and charts one song. [progress] receives a message and the whole preparation's
-     * fraction. [shouldYield] is asked between steps of the analysis; when it turns true,
-     * preparation stops with [Yielded] and the song returns to pending, keeping a finished
-     * download for the next attempt. Returns how long each part took, or null when the song was
-     * already prepared.
+     * Downloads one song's audio and cover into the songs folder, where it waits for its level.
+     * [progress] receives a message and the whole preparation's fraction, of which the download
+     * is the first [DOWNLOAD_SHARE]. Returns how long it took, or null when there was nothing to do.
      */
-    fun cacheSong(
+    fun download(
+        playlistId: String,
+        songId: String,
+        generation: Long = cacheGeneration,
+        progress: (String, Double) -> Unit,
+    ): Long? = synchronized(downloadLock) {
+        if (generation == cacheGeneration) downloadNow(playlistId, songId, progress) else null
+    }
+
+    /**
+     * Makes the full level of a downloaded song. [shouldYield] is asked between steps of the
+     * analysis; when it turns true, this stops with [Yielded] and the song waits for its turn
+     * again. Returns how long it took, or null when there was nothing to do.
+     */
+    fun prepare(
         playlistId: String,
         songId: String,
         generation: Long = cacheGeneration,
         shouldYield: () -> Boolean = { false },
         progress: (String, Double) -> Unit,
-    ): Timing? = synchronized(cacheLock) {
-        if (generation == cacheGeneration) cacheSongNow(playlistId, songId, shouldYield, progress) else null
+    ): Long? = synchronized(chartLock) {
+        if (generation == cacheGeneration) prepareNow(playlistId, songId, shouldYield, progress) else null
     }
 
-    /** A prepared song's download time, null when an earlier download was reused, and chart time. */
-    class Timing(val downloadMs: Long?, val chartMs: Long, val seconds: Double)
-
-    /** Thrown when a song's preparation gives way to one the player is waiting for. */
+    /** Thrown when making a level gives way to a song that is needed sooner. */
     class Yielded : RuntimeException("Preparation paused for another song")
 
-    /** Whether the song's download is done and kept, so only its chart is left. */
-    fun downloaded(songId: String) = File(context.cacheDir, "downloads/$songId/complete").isFile
+    /** The song in its playlist, with the title the player may see: locked levels stay masked. */
+    private fun locate(playlistId: String, songId: String): Pair<JSONObject, String> {
+        val playlist = requireNotNull(snapshot(playlistId)) { "Playlist not found. Import it again." }
+        val songs = songsOf(playlist)
+        val position = songs.indexOfFirst { it.optString("id") == songId }
+        require(position >= 0) { "Song not found. Import the playlist again." }
+        val song = songs[position]
+        return song to SongTitle.display(song.optString("title"), (0 until position).all { store.completed(songs[it]) })
+    }
 
-    private fun cacheSongNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit): Timing? {
-        val playlist =
-            requireNotNull(snapshot(playlistId)) { "Playlist not found. Import it again." }
-        val songs = playlist.getJSONArray("songs")
-        val song =
-            (0 until songs.length())
-                .map { songs.getJSONObject(it) }
-                .first { it.getString("id") == songId }
-        val position = (0 until songs.length()).first {
-            songs.getJSONObject(it).getString("id") == songId
-        }
-        val title = SongTitle.display(song.optString("title"),
-            (0 until position).all { store.completed(songs.getJSONObject(it)) })
-        if (store.offline(song)) {
-            updateSong(playlistId, songId) { it.put("status", "ready") }
-            return null
-        }
+    private fun downloadNow(playlistId: String, songId: String, progress: (String, Double) -> Unit): Long? {
+        val (song, title) = locate(playlistId, songId)
+        if (store.downloaded(song)) return null
         // Progress stays in memory: saving it would rewrite the whole playlist every percent.
         fun report(message: String, fraction: Double) {
             preparing[songId] = message to fraction
@@ -371,115 +379,150 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
         updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
         report("Downloading", 0.0)
-        val folder = File(context.cacheDir, "downloads/$songId").apply { mkdirs() }
-        val job = "song-$songId"
+        val folder = File(context.cacheDir, "downloads/$songId").apply { deleteRecursively(); mkdirs() }
         val audio = File(folder, "source.mp3")
         val info = File(folder, "source.info.json")
-        val complete = File(folder, "complete")
         val started = System.currentTimeMillis()
-        var downloadMs: Long? = null
         try {
-            // A download whose chart gave way to another song is reused as is.
-            if (!complete.isFile) {
-                val request =
-                    YTDLRequest("https://www.youtube.com/watch?v=$songId")
-                        .addOption("--format", "bestaudio")
-                        .addOption("--extract-audio")
-                        .addOption("--audio-format", "mp3")
-                        .addOption("--audio-quality", 0)
-                        .addOption("--add-metadata")
-                        .addOption("--embed-thumbnail")
-                        .addOption("--write-thumbnail")
-                        .addOption("--convert-thumbnails", "jpg")
-                        .addOption("--write-info-json")
-                        .addOption("--no-mtime")
-                        .addOption("--newline")
-                        .addOption("--socket-timeout", 20)
-                        .addOption("--retries", 2)
-                        .addOption("--max-filesize", "100M")
-                        .addOption("--match-filters", "duration <= 1200")
-                        .addOption("--output", File(folder, "source.%(ext)s").path)
-                var lastProgress = 0L
-                runtime.execute(request, job, 600) { line ->
-                    val now = System.currentTimeMillis()
-                    if (now - lastProgress > 750 && (line.contains("[download]") || line.contains("[ExtractAudio]"))) {
-                        lastProgress = now
-                        val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                        when {
-                            line.contains("[ExtractAudio]") -> report("Converting audio", DOWNLOAD_SHARE)
-                            percent != null -> report("Downloading", percent.coerceIn(0.0, 100.0) / 100 * (DOWNLOAD_SHARE - .03))
-                        }
+            val request =
+                YTDLRequest("https://www.youtube.com/watch?v=$songId")
+                    .addOption("--format", "bestaudio")
+                    .addOption("--extract-audio")
+                    .addOption("--audio-format", "mp3")
+                    .addOption("--audio-quality", 0)
+                    .addOption("--add-metadata")
+                    .addOption("--embed-thumbnail")
+                    .addOption("--write-thumbnail")
+                    .addOption("--convert-thumbnails", "jpg")
+                    .addOption("--write-info-json")
+                    .addOption("--no-mtime")
+                    .addOption("--newline")
+                    .addOption("--socket-timeout", 20)
+                    .addOption("--retries", 2)
+                    .addOption("--max-filesize", "100M")
+                    .addOption("--match-filters", "duration <= 1200")
+                    .addOption("--output", File(folder, "source.%(ext)s").path)
+            var lastProgress = 0L
+            runtime.execute(request, "song-$songId", 600) { line ->
+                val now = System.currentTimeMillis()
+                if (now - lastProgress > 750 && (line.contains("[download]") || line.contains("[ExtractAudio]"))) {
+                    lastProgress = now
+                    val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+                    when {
+                        line.contains("[ExtractAudio]") -> report("Converting audio", DOWNLOAD_SHARE - .03)
+                        percent != null -> report("Downloading", percent.coerceIn(0.0, 100.0) / 100 * (DOWNLOAD_SHARE - .03))
                     }
                 }
-                check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
-                complete.createNewFile()
-                downloadMs = System.currentTimeMillis() - started
             }
-            val charting = System.currentTimeMillis()
-            val chart = writeChart(song, audio, songId, shouldYield) { message, fraction ->
-                report(message, DOWNLOAD_SHARE + fraction * (1 - DOWNLOAD_SHARE))
+            check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
+            val metadata = runCatching { JSONObject(info.readText()) }.getOrDefault(JSONObject())
+            File(folder, "source.jpg").takeIf { it.exists() }?.let {
+                Files.move(it.toPath(), store.songFile(song, "jpg").toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-            val chartMs = System.currentTimeMillis() - charting
-            val metadata = JSONObject(info.readText())
-            Files.move(
-                audio.toPath(),
-                store.songFile(song, "mp3").toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-            )
-            File(folder, "source.jpg")
-                .takeIf { it.exists() }
-                ?.let {
-                    Files.move(
-                        it.toPath(),
-                        store.songFile(song, "jpg").toPath(),
-                        StandardCopyOption.REPLACE_EXISTING,
-                    )
-                }
+            // The audio arriving in the songs folder is what marks the song downloaded.
+            Files.move(audio.toPath(), store.songFile(song, "mp3").toPath(), StandardCopyOption.REPLACE_EXISTING)
             // Downloaded metadata belongs to the song, so every playlist that has it gets the same.
             updateSongEverywhere(songId) { value ->
-                value
-                    .put("status", "ready")
-                    .put("duration", chart.duration)
-                    .put(
-                        "title",
-                        metadata.optString("track").ifBlank {
-                            metadata.optString("title", song.optString("title"))
-                        },
-                    )
-                    .put(
-                        "artist",
-                        metadata.optString("artist").ifBlank {
-                            metadata.optString("uploader", song.optString("artist"))
-                        },
-                    )
+                value.put("status", "pending")
+                    .put("title", metadata.optString("track").ifBlank { metadata.optString("title", value.optString("title")) })
+                    .put("artist", metadata.optString("artist").ifBlank { metadata.optString("uploader", value.optString("artist")) })
+                metadata.optDouble("duration", 0.0).takeIf { it > 0 }?.let { value.put("duration", it) }
             }
             folder.deleteRecursively()
-            return Timing(downloadMs, chartMs, chart.duration)
+            return System.currentTimeMillis() - started
         } catch (error: Throwable) {
-            if (error is Yielded) {
-                updateSong(playlistId, songId) { it.put("status", "pending") }
-                throw error
-            }
             File(folder, "download.log").writeText(error.message ?: "Download failed")
-            // A lost connection says nothing about the song, so it is tried again soon.
-            val connection = connectionLost(error)
-            updateSong(playlistId, songId) {
-                it.put("status", "error")
-                    .put("failedAt", System.currentTimeMillis())
-                    .put("connection", connection)
-                    .put("error", error.message?.takeLast(2000) ?: "Download failed. Please retry.")
-            }
+            failed(playlistId, songId, error, connectionLost(error))
             throw error
         } finally {
             preparing.remove(songId)
         }
     }
 
+    private fun prepareNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit): Long? {
+        val (song, title) = locate(playlistId, songId)
+        val audio = store.songFile(song, "mp3")
+        if (!audio.isFile) return null
+        if (store.chartFile(song).isFile) {
+            updateSong(playlistId, songId) { it.put("status", "ready") }
+            return null
+        }
+        fun report(message: String, fraction: Double) {
+            preparing[songId] = message to fraction
+            progress("$title · $message", fraction)
+        }
+        updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
+        val started = System.currentTimeMillis()
+        try {
+            val chart = writeChart(song, audio, songId, shouldYield) { message, fraction ->
+                report(message, DOWNLOAD_SHARE + fraction * (1 - DOWNLOAD_SHARE))
+            }
+            store.quickChartFile(song).delete()
+            updateSongEverywhere(songId) { it.put("status", "ready").put("duration", chart.duration) }
+            return System.currentTimeMillis() - started
+        } catch (error: Throwable) {
+            if (error is Yielded) {
+                updateSong(playlistId, songId) { it.put("status", if (store.offline(song)) "ready" else "pending") }
+                throw error
+            }
+            // Making a level needs no connection, so its failure is about the song.
+            failed(playlistId, songId, error, connection = false)
+            throw error
+        } finally {
+            preparing.remove(songId)
+            analysed.remove(songId)
+        }
+    }
+
+    private fun failed(playlistId: String, songId: String, error: Throwable, connection: Boolean) =
+        updateSong(playlistId, songId) {
+            it.put("status", "error")
+                .put("failedAt", System.currentTimeMillis())
+                .put("connection", connection)
+                .put("error", error.message?.takeLast(2000) ?: "Download failed. Please retry.")
+        }
+
+    /**
+     * Makes a quick level for a downloaded song from its beat, in seconds instead of minutes, so
+     * the player can go on while the full level is still being made; the full one replaces it.
+     * Reuses the beat when the full level's analysis already found it. [progress] gets 0–1.
+     */
+    fun quickLevel(song: JSONObject, progress: (Double) -> Unit = {}) {
+        val songId = song.getString("id")
+        if (store.offline(song)) return
+        val audio = store.songFile(song, "mp3")
+        check(audio.isFile) { "This song isn't downloaded yet." }
+        // The full level may be finding this song's beat right now; sharing it beats repeating it.
+        while (analysed[songId] == null) {
+            val (stage, fraction) = preparing[songId] ?: break
+            if (stage != FINDING_BEAT) break
+            progress(((fraction - DOWNLOAD_SHARE) / (1 - DOWNLOAD_SHARE) / BEAT_SHARE).coerceIn(0.0, .95))
+            Thread.sleep(100)
+        }
+        if (store.offline(song)) return
+        val (features, rhythm) = analysed[songId] ?: run {
+            progress(0.0)
+            val features = runtime.audioSamples(audio, "quick-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
+            progress(.4)
+            features to BeatThis(context).analyze(features) { progress(.4 + it * .0055) }
+        }
+        check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
+        val chart = QuickChart.generate(features, rhythm, songId.hashCode())
+        // The full level may have arrived meanwhile; it always wins.
+        if (!store.chartFile(song).isFile) replace(store.quickChartFile(song), PreparedChart.encode(chart).toString())
+        updateSongEverywhere(songId) { it.put("status", "ready") }
+        progress(1.0)
+    }
+
     /** Whether [error] came from a lost or missing connection rather than from the song. */
     fun connectionLost(error: Throwable) = !Preparation.connected(context) || NETWORK_ERROR.containsMatchIn(error.message.orEmpty())
 
-    /** The stage and whole-preparation fraction of a song being prepared now. */
-    fun preparing(songId: String): Pair<String, Double>? = preparing[songId]
+    /**
+     * The stage and whole-preparation fraction of a song being worked on now. A downloaded song
+     * waiting for its level counts its download as done.
+     */
+    fun preparing(song: JSONObject): Pair<String, Double>? =
+        preparing[song.optString("id")] ?: if (store.downloaded(song)) "Downloaded · next to prepare" to DOWNLOAD_SHARE else null
 
     /** [progress] gets this step's own fraction; the chart model is most of the work. */
     private fun writeChart(
@@ -489,10 +532,12 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         shouldYield: () -> Boolean,
         progress: (String, Double) -> Unit,
     ): Chart {
-        progress("Finding the beat", 0.0)
+        progress(FINDING_BEAT, 0.0)
         val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
         val rhythm = BeatThis(context).analyze(features) { if (shouldYield()) throw Yielded() }
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
+        // A quick level asked for while the tiles are placed can start from this beat.
+        analysed[songId] = features to rhythm
         progress("Placing tiles", BEAT_SHARE)
         val temporary = File.createTempFile("chart-audio-", ".pcm", context.cacheDir)
         val learned = try {
@@ -527,6 +572,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             }
         }
 
+    /** Cleanup waits for the song being downloaded and the level being made to finish. */
+    private fun <T> cleanup(block: () -> T): T = synchronized(downloadLock) { synchronized(chartLock) { block() } }
+
     private fun index(id: String): File {
         require(id.matches(Regex("[A-Za-z0-9_-]{1,80}"))) { "Invalid playlist ID" }
         return File(indexes, "$id.json")
@@ -553,9 +601,10 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
 
-        /** Shares of a song's preparation: the transfer, then beats before the slower chart model. */
+        /** Shares of a song's preparation: the download, then beats before the slower chart model. */
         const val DOWNLOAD_SHARE = .35
         const val BEAT_SHARE = .15
+        private const val FINDING_BEAT = "Finding the beat"
         const val MAX_TITLE = 60
 
         @Volatile private var instance: OnDeviceLibrary? = null

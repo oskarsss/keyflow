@@ -21,9 +21,10 @@ class PreparationPlanTest {
     private fun inputs(
         playlists: List<JSONObject>, current: String? = null, completed: Set<String> = emptySet(),
         ready: Set<String> = emptySet(), history: List<String> = emptyList(), waiting: Pair<String, String>? = null,
-        arcadePlaying: Boolean = false,
+        arcadePlaying: Boolean = false, downloaded: Set<String> = ready, prepared: Set<String> = ready,
+        now: Long = System.currentTimeMillis(),
     ) = PreparationPlan.Inputs(playlists, current, { it.optString("id") in completed }, { it.optString("id") in ready },
-        history, waiting, arcadePlaying = arcadePlaying)
+        history, waiting, now, arcadePlaying, { it.optString("id") in downloaded }, { it.optString("id") in prepared })
 
     private fun plan(inputs: PreparationPlan.Inputs) = PreparationPlan.wanted(inputs).map { it.id to it.reason }
 
@@ -90,26 +91,31 @@ class PreparationPlanTest {
     }
 
     @Test
-    fun readySongsStayWantedButOnlyMissingOnesArePendingAndFailuresWaitUnlessOpened() {
+    fun songsToDownloadAndLevelsToMakeAreSeparateQueuesAndFailuresWaitUnlessOpened() {
         val mix = playlist("m", 8)
         val now = 10 * PreparationPlan.RETRY_MS
         mix.getJSONArray("songs").getJSONObject(1).put("status", "error").put("failedAt", now - 1000)
-        val input = inputs(listOf(mix), ready = setOf("m0"))
+        // m0 is fully prepared, m2 is downloaded with a quick level, m3 is only downloaded.
+        fun at(time: Long, waiting: Pair<String, String>? = null) = inputs(listOf(mix), ready = setOf("m0", "m2"),
+            downloaded = setOf("m0", "m2", "m3"), prepared = setOf("m0"), waiting = waiting, now = time)
+        val input = at(now)
         val wanted = PreparationPlan.wanted(input)
         assertEquals("m0", wanted.first().id)
-        val pending = PreparationPlan.pending(wanted, input.ready, now).map { it.id }
-        assertFalse("m0" in pending)
-        assertFalse("m1" in pending)
-        // The next level is ready and the locked one waits after failing, so the rest move up.
-        assertEquals(PreparationPlan.wanted(input).map { it.id }.filter { it !in setOf("m0", "m1") }, pending)
-        assertTrue("m1" in PreparationPlan.pending(wanted, input.ready, now + PreparationPlan.RETRY_MS).map { it.id })
+        // The locked level waits after failing, so the songs after it move up.
+        val downloads = PreparationPlan.toDownload(wanted, input).map { it.id }
+        assertEquals(wanted.map { it.id }.filter { it !in setOf("m0", "m1", "m2", "m3") }, downloads)
+        // A quick level still has its full level to come; a song still to download has no level to make yet.
+        assertEquals(wanted.map { it.id }.filter { it in setOf("m2", "m3") }, PreparationPlan.toPrepare(wanted, input).map { it.id })
+        val later = at(now + PreparationPlan.RETRY_MS)
+        assertTrue("m1" in PreparationPlan.toDownload(PreparationPlan.wanted(later), later).map { it.id })
         // A dropped connection says nothing about the song, so it comes back within a minute.
         mix.getJSONArray("songs").getJSONObject(1).put("connection", true)
-        assertFalse("m1" in PreparationPlan.pending(wanted, input.ready, now).map { it.id })
-        assertTrue("m1" in PreparationPlan.pending(wanted, input.ready, now + PreparationPlan.CONNECTION_RETRY_MS).map { it.id })
+        assertFalse("m1" in PreparationPlan.toDownload(wanted, input).map { it.id })
+        val soon = at(now + PreparationPlan.CONNECTION_RETRY_MS)
+        assertTrue("m1" in PreparationPlan.toDownload(PreparationPlan.wanted(soon), soon).map { it.id })
         mix.getJSONArray("songs").getJSONObject(1).remove("connection")
-        val opened = inputs(listOf(mix), ready = setOf("m0"), waiting = "m" to "m1")
-        assertEquals("m1", PreparationPlan.pending(PreparationPlan.wanted(opened), opened.ready, now).first().id)
+        val opened = at(now, waiting = "m" to "m1")
+        assertEquals("m1", PreparationPlan.toDownload(PreparationPlan.wanted(opened), opened).first().id)
     }
 
     @Test

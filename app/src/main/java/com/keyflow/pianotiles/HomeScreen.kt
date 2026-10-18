@@ -217,11 +217,10 @@ private fun MainActivity.addHero(body: LinearLayout, index: Int, song: JSONObjec
 }
 
 /** Whole-song preparation: the download, then the on-device chart, as one progress value. */
-internal fun MainActivity.downloadFraction(song: JSONObject): Float? =
-    library.preparing(song.optString("id"))?.second?.toFloat()
+internal fun MainActivity.downloadFraction(song: JSONObject): Float? = library.preparing(song)?.second?.toFloat()
 
 internal fun MainActivity.downloadStage(song: JSONObject): String {
-    val (stage, fraction) = library.preparing(song.optString("id")) ?: return "Getting music ready…"
+    val (stage, fraction) = library.preparing(song) ?: return "Getting music ready…"
     return "$stage · ${(fraction * 100).toInt()}%"
 }
 
@@ -531,7 +530,8 @@ private fun MainActivity.showHeroReadiness(state: Preparation.Readiness) {
     play.alpha = if (ready) 1f else .5f
     status.visibility = if (ready) View.GONE else View.VISIBLE
     status.text = when (state) {
-        is Preparation.Readiness.Waiting -> "Getting this level ready · playable in ${Preparation.describe(state.ms)}"
+        is Preparation.Readiness.Waiting -> "Getting this level ready · playable in ${Preparation.describe(state.ms)}" +
+            if (state.downloaded) ", or now as a quick level" else ""
         Preparation.Readiness.Offline -> "Connect to the internet to get this level ready"
         Preparation.Readiness.Failed -> "Couldn't prepare this level · tap Play to retry"
         else -> ""

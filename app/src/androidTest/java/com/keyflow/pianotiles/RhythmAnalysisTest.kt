@@ -9,6 +9,7 @@ import com.keyflow.pianotiles.chart.BeatThis
 import com.keyflow.pianotiles.chart.ManiaChartModel
 import com.keyflow.pianotiles.chart.MusicFeatures
 import com.keyflow.pianotiles.chart.PreparedChart
+import com.keyflow.pianotiles.chart.QuickChart
 import com.keyflow.pianotiles.game.GameView
 import com.keyflow.pianotiles.library.LibraryStore
 import com.keyflow.pianotiles.library.OnDeviceLibrary
@@ -61,8 +62,18 @@ class RhythmAnalysisTest {
             for ((index, source) in sources.withIndex()) {
                 val song = songs.getJSONObject(index)
                 source.copyTo(store.songFile(song, "mp3"), overwrite = true)
+                // A quick level is playable in seconds; the full level replaces it.
+                val quickStarted = android.os.SystemClock.elapsedRealtime()
+                library.quickLevel(song)
+                val quick = store.chart(song)
+                android.util.Log.i("RhythmEvaluation", "${source.name}: quick level with ${quick.getJSONArray("notes").length()} " +
+                    "notes in ${android.os.SystemClock.elapsedRealtime() - quickStarted} ms")
+                assertEquals(QuickChart.METHOD, quick.getString("method"))
+                assertTrue("Too few quick notes in ${source.name}", quick.getJSONArray("notes").length() > 40)
+                assertTrue(store.offline(song))
                 val started = android.os.SystemClock.elapsedRealtime()
-                library.cacheSong(id, song.getString("id")) { _, _ -> }
+                library.prepare(id, song.getString("id")) { _, _ -> }
+                assertFalse(store.quickChartFile(song).exists())
                 assertTrue(store.offline(song))
                 val chart = store.chart(song)
                 assertEquals(ManiaChartModel.METHOD, chart.getString("method"))
@@ -72,7 +83,7 @@ class RhythmAnalysisTest {
                 assertEquals("ready", savedSong.getString("status"))
                 val modified = store.chartFile(song).lastModified()
                 var preparationMessages = 0
-                library.cacheSong(id, song.getString("id")) { _, _ -> preparationMessages++ }
+                library.prepare(id, song.getString("id")) { _, _ -> preparationMessages++ }
                 assertEquals("Prepared songs must reuse their chart", modified, store.chartFile(song).lastModified())
                 assertEquals("No analysis should restart on a cache hit", 0, preparationMessages)
                 val notes = chart.getJSONArray("notes")

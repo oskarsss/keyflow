@@ -173,7 +173,8 @@ class ImportedPlaylistTest {
             }
         }
         // These IDs would fail immediately if stale queued work reached the downloader.
-        library.cacheSong("missing-playlist", "missing-song", generation) { _, _ -> fail("Stale queue ran") }
+        library.download("missing-playlist", "missing-song", generation) { _, _ -> fail("Stale queue ran") }
+        library.prepare("missing-playlist", "missing-song", generation) { _, _ -> fail("Stale queue ran") }
         assertFalse(store.offline(song))
     }
 

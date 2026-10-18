@@ -1,67 +1,81 @@
 package com.keyflow.pianotiles
 
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.keyflow.pianotiles.library.OnDeviceLibrary
 import com.keyflow.pianotiles.library.Preparation
 import com.keyflow.pianotiles.library.Preparation.QueueState
 import com.keyflow.pianotiles.library.PreparationPlan.Reason
 import com.keyflow.pianotiles.ui.Palette
 
 /**
- * Settings › Download queue: every song the worker still has to download and prepare, in the
- * order it takes them, refreshed while the page is open.
+ * Settings › Song queues: the songs one worker still has to download and the downloaded songs
+ * whose levels the other still has to make, each in the order its worker takes them, refreshed
+ * while the page is open.
  */
 internal fun MainActivity.showQueue() {
-    val body = page(Screen.QUEUE, bar("Download queue") { showSettings() })
+    val body = page(Screen.QUEUE, bar("Song queues") { showSettings() })
     val summary = ui.text("Checking…", 13f, Palette.MUTED).apply { setPadding(dp(4), dp(12), dp(4), 0) }
     ui.fill(body, summary)
-    val list = section(body, "Up next")
-    list.visibility = android.view.View.GONE
-    refreshQueue(scroll, summary, list)
+    val downloads = section(body, "Downloading")
+    val levels = section(body, "Preparing levels")
+    downloads.visibility = View.GONE
+    levels.visibility = View.GONE
+    refreshQueue(scroll, summary, downloads, levels)
 }
 
-private fun MainActivity.refreshQueue(page: ScrollView?, summary: TextView, list: LinearLayout) {
+private fun MainActivity.refreshQueue(page: ScrollView?, summary: TextView, downloads: LinearLayout, levels: LinearLayout) {
     io.execute {
-        val queue = runCatching { Preparation.queue(this) }.getOrDefault(emptyList())
+        val queues = runCatching { Preparation.queues(this) }.getOrNull()
         handler.post {
             // A rebuilt or different screen has its own page.
             if (scroll !== page || isDestroyed) return@post
-            showQueued(queue, summary, list)
-            handler.postDelayed({ refreshQueue(page, summary, list) }, 2000)
+            if (queues != null) {
+                summary.text = when {
+                    queues.downloads.isEmpty() && queues.levels.isEmpty() -> "Every song your playlists and Arcade need is ready."
+                    else -> listOfNotNull(
+                        songs(queues.downloads.size).takeIf { queues.downloads.isNotEmpty() }?.let { "$it to download" },
+                        levelCount(queues.levels.size).takeIf { queues.levels.isNotEmpty() }?.let { "$it to prepare" },
+                    ).joinToString(" · ")
+                }
+                showQueued(downloads, queues.downloads, download = true)
+                showQueued(levels, queues.levels, download = false)
+            }
+            handler.postDelayed({ refreshQueue(page, summary, downloads, levels) }, 2000)
         }
     }
 }
 
-private fun MainActivity.showQueued(queue: List<Preparation.Queued>, summary: TextView, list: LinearLayout) {
-    val waiting = queue.mapNotNull { (it.state as? QueueState.InLine)?.readyInMs ?: (it.state as? QueueState.Preparing)?.leftMs }
-    val held = queue.count { it.state is QueueState.Held }
-    summary.text = when {
-        queue.isEmpty() -> "Every song your playlists and Arcade need is on the phone."
-        waiting.isEmpty() -> "${songs(queue.size)} waiting"
-        else -> listOfNotNull(
-            "${songs(waiting.size)} to prepare · done in ${Preparation.describe(waiting.max())}",
-            if (held > 0) "${songs(held)} waiting" else null,
-        ).joinToString(" · ")
-    }
-    list.visibility = if (queue.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+private fun MainActivity.showQueued(list: LinearLayout, queue: List<Preparation.Queued>, download: Boolean) {
+    list.visibility = if (queue.isEmpty()) View.GONE else View.VISIBLE
     list.removeAllViews()
+    val share = OnDeviceLibrary.DOWNLOAD_SHARE
     for ((i, queued) in queue.take(SHOWN).withIndex()) {
         if (i > 0) divider(list)
         val row = ui.column().apply { setPadding(dp(18), dp(12), dp(18), dp(12)) }
         ui.fill(row, ui.oneLine(ui.text(queued.title, 15f, Palette.TEXT, ui.medium)))
         ui.gap(row, 4)
         val source = listOf(queued.playlist, reasonLabel(queued.item.reason)).filter { it.isNotBlank() }
+        // Each worker's bar runs over its own part of the preparation.
+        val step = (queued.state as? QueueState.Working)?.fraction?.let { if (download) it / share else (it - share) / (1 - share) }
+            ?.coerceIn(0.0, 1.0)
         val status = when (val state = queued.state) {
-            is QueueState.Preparing -> "${state.stage} · ${(state.fraction * 100).toInt()}%"
-            is QueueState.InLine -> "Ready in ${Preparation.describe(state.readyInMs)}"
+            is QueueState.Working -> "${state.stage} · ${((step ?: 0.0) * 100).toInt()}%"
+            is QueueState.InLine -> when {
+                download -> "Downloaded in ${Preparation.describe(state.doneInMs)}"
+                queued.quick -> "Full level in ${Preparation.describe(state.doneInMs)}"
+                else -> "Ready in ${Preparation.describe(state.doneInMs)}"
+            }
             is QueueState.Held -> state.reason
         }
-        ui.fill(row, ui.text((source + status).joinToString(" · "), 12.5f,
+        val quick = if (queued.quick) listOf("Quick level ready") else emptyList()
+        ui.fill(row, ui.text((source + quick + status).joinToString(" · "), 12.5f,
             if (queued.state is QueueState.Held) Palette.FAINT else Palette.MUTED))
-        (queued.state as? QueueState.Preparing)?.let {
+        step?.let {
             ui.gap(row, 8)
-            ui.fill(row, ui.meter(it.fraction.toFloat(), height = 4))
+            ui.fill(row, ui.meter(it.toFloat(), height = 4))
         }
         ui.fill(list, row)
     }
@@ -74,6 +88,8 @@ private fun MainActivity.showQueued(queue: List<Preparation.Queued>, summary: Te
 }
 
 private fun songs(count: Int) = if (count == 1) "1 song" else "$count songs"
+
+private fun levelCount(count: Int) = if (count == 1) "1 level" else "$count levels"
 
 private fun reasonLabel(reason: Reason) = when (reason) {
     Reason.WAITING -> "You opened it"

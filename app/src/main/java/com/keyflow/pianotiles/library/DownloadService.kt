@@ -12,21 +12,25 @@ import com.keyflow.pianotiles.MainActivity
 import com.keyflow.pianotiles.R
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 
 /**
- * The one worker that prepares songs, one at a time, in a foreground service that survives
- * leaving the game or locking the phone. It asks [Preparation] for the next song each time, and
- * stops when nothing wanted is missing.
+ * The two workers that prepare songs, in a foreground service that survives leaving the game or
+ * locking the phone. One downloads songs, the other makes levels for downloaded ones, so neither
+ * waits for the other: levels are made while the next songs download, even without a connection.
+ * Each asks [Preparation] for its next song every time, and the service stops when both are done.
  */
 class DownloadService : Service() {
-    private val worker = Executors.newSingleThreadExecutor { task ->
-        Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, "song-preparation")
-    }
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
-    private val running = AtomicBoolean()
-    private val again = AtomicBoolean()
     private var lastStart = 0
     private lateinit var library: OnDeviceLibrary
+    private val downloads = Lane("song-download", Preparation::nextDownload, ::download, online = true)
+    private val levels = Lane("song-level", Preparation::nextLevel, ::makeLevel, online = false)
+    @Volatile private var downloadText: String? = null
+    @Volatile private var downloadFraction = 0.0
+    @Volatile private var levelText: String? = null
+    @Volatile private var levelFraction = 0.0
+    private var shown = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -40,94 +44,148 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION, notification())
         lastStart = startId
-        again.set(true)
-        if (running.compareAndSet(false, true)) worker.execute(::drain)
+        downloads.start()
+        levels.start()
         return START_NOT_STICKY
     }
 
-    /** Prepares wanted songs until none is missing; a start during the last check runs another pass. */
-    private fun drain() {
-        // Songs that failed in this pass without being marked, so they can't repeat endlessly.
-        val skip = HashSet<String>()
-        while (again.getAndSet(false)) {
-            var failures = 0
-            // Two lost connections in a row would fail every song, so the rest wait for a
-            // connection. A song that fails on its own is marked and passed over.
-            while (failures < 2) {
-                val item = runCatching { Preparation.next(this, skip) }.getOrNull() ?: break
-                when (val error = prepare(item)) {
-                    null -> failures = 0
-                    else -> {
-                        skip.add(item.id)
-                        if (library.connectionLost(error)) failures++ else failures = 0
+    /**
+     * One worker and its queue. It works until [next] has nothing more; a start during its last
+     * check runs another pass. A worker that needs to be [online] stops after two lost connections.
+     */
+    private inner class Lane(
+        name: String,
+        private val next: (android.content.Context, Set<String>) -> PreparationPlan.Item?,
+        private val work: (PreparationPlan.Item) -> Throwable?,
+        private val online: Boolean,
+    ) {
+        private val worker = Executors.newSingleThreadExecutor { task ->
+            Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); task.run() }, name)
+        }
+        val running = AtomicBoolean()
+        private val again = AtomicBoolean()
+
+        fun start() {
+            again.set(true)
+            if (running.compareAndSet(false, true)) worker.execute(::drain)
+        }
+
+        private fun drain() {
+            // Songs that failed in this pass without being marked, so they can't repeat endlessly.
+            val skip = HashSet<String>()
+            while (again.getAndSet(false)) {
+                var failures = 0
+                // Two lost connections in a row would fail every download, so the rest wait for a
+                // connection. A song that fails on its own is marked and passed over.
+                while (failures < 2) {
+                    val item = runCatching { next(this@DownloadService, skip) }.getOrNull() ?: break
+                    when (val error = work(item)) {
+                        null -> failures = 0
+                        else -> {
+                            skip.add(item.id)
+                            if (online && library.connectionLost(error)) failures++ else failures = 0
+                        }
                     }
                 }
             }
+            running.set(false)
+            if (again.get() && running.compareAndSet(false, true)) return drain()
+            main.post(::stopWhenDone)
         }
-        running.set(false)
-        if (again.get() && running.compareAndSet(false, true)) return drain()
-        main.post {
-            if (!running.get()) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelfResult(lastStart)
+
+        fun shutdown() = worker.shutdown()
+    }
+
+    private fun stopWhenDone() {
+        if (downloads.running.get() || levels.running.get()) return
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(lastStart)
+    }
+
+    /** Returns why the download failed, or null. A finished download wakes the other worker. */
+    private fun download(item: PreparationPlan.Item): Throwable? {
+        val songId = item.id
+        android.util.Log.i("Keyflow", "Downloading $songId from ${item.playlistId}: ${item.reason}")
+        Preparation.downloading = Preparation.Current(item.song)
+        return try {
+            library.download(item.playlistId, songId) { message, fraction ->
+                downloadText = message
+                downloadFraction = fraction
+                show()
             }
+                ?.let { Preparation.downloaded(this, it) }
+            levels.start()
+            null
+        } catch (error: Throwable) {
+            android.util.Log.w("Keyflow", "Song download failed", error)
+            Preparation.release(songId)
+            error
+        } finally {
+            Preparation.downloading = null
+            downloadText = null
         }
     }
 
-    /** Returns why the song failed, or null; a song that gave way to another counts as fine. */
-    private fun prepare(item: PreparationPlan.Item): Throwable? {
+    /** Returns why making the level failed, or null; a level that gave way to another counts as fine. */
+    private fun makeLevel(item: PreparationPlan.Item): Throwable? {
         val songId = item.id
-        val current = Preparation.Current(item.song)
-        android.util.Log.i("Keyflow", "Preparing $songId from ${item.playlistId}: ${item.reason}")
-        Preparation.current = current
-        var shown = 0L
+        android.util.Log.i("Keyflow", "Making the level of $songId from ${item.playlistId}: ${item.reason}")
+        Preparation.making = Preparation.Current(item.song)
         var checked = System.currentTimeMillis()
         var stepStarted = SystemClock.elapsedRealtime()
-        // Rests aren't part of how long the song takes, which the wait estimates learn from.
+        // Rests aren't part of how long the level takes, which the wait estimates learn from.
         var rested = 0L
-        // A song wanted for one reason can become more urgent while it is prepared.
+        // A song wanted for one reason can become more urgent while its level is made.
         var reason = item.reason
+        val store = LibraryStore(this)
         // Between steps of the analysis: rest while a game is played, then give way when the player
-        // waits for a different song, a playlist's next two levels need this worker, or Download
-        // ahead and Download all must wait for Wi-Fi or a charger. The plan is read at most every
-        // few seconds.
+        // waits for a different song that is downloaded, a playlist's next two levels need this
+        // worker, or Download ahead and Download all must wait for a charger. The plan is read at
+        // most every few seconds.
         fun shouldYield(): Boolean {
             if (Preparation.waiting?.second == songId) reason = PreparationPlan.Reason.WAITING
             val resting = SystemClock.elapsedRealtime()
             rest(reason, resting - stepStarted)
             stepStarted = SystemClock.elapsedRealtime()
             rested += stepStarted - resting
-            if (Preparation.waiting.let { it != null && it.second != songId }) return true
+            val waiting = Preparation.waiting
+            if (waiting != null && waiting.second != songId && store.downloaded(JSONObject().put("id", waiting.second))) return true
             val now = System.currentTimeMillis()
             if (reason == PreparationPlan.Reason.WAITING || now - checked < YIELD_CHECK_MS) return false
             checked = now
-            if (PreparationPlan.big(reason) && !Preparation.allowsBigDownloads(this)) return true
-            val next = runCatching { Preparation.next(this) }.getOrNull()
+            if (PreparationPlan.big(reason) && Preparation.bigLevelsWaitFor(this) != null) return true
+            val next = runCatching { Preparation.nextLevel(this) }.getOrNull()
             if (next?.id == songId) reason = next.reason
             return PreparationPlan.outranks(next, PreparationPlan.Item(item.playlistId, item.song, reason))
         }
         return try {
-            val timing = library.cacheSong(item.playlistId, songId, shouldYield = ::shouldYield) { message, fraction ->
-                current.fraction = fraction
-                val now = System.currentTimeMillis()
-                if (now - shown > 1000) {
-                    shown = now
-                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(message, fraction))
-                }
-            }
-            if (timing != null)
-                Preparation.finished(this, OnDeviceLibrary.Timing(timing.downloadMs, timing.chartMs - rested, timing.seconds))
+            library.prepare(item.playlistId, songId, shouldYield = ::shouldYield) { message, fraction ->
+                levelText = message
+                levelFraction = fraction
+                show()
+            }?.let { Preparation.prepared(this, it - rested, PreparationTime.seconds(item.song)) }
             Preparation.release(songId)
             null
         } catch (_: OnDeviceLibrary.Yielded) {
             null
         } catch (error: Throwable) {
-            android.util.Log.w("Keyflow", "Song preparation failed", error)
+            android.util.Log.w("Keyflow", "Making a level failed", error)
             Preparation.release(songId)
             error
         } finally {
-            Preparation.current = null
+            Preparation.making = null
+            levelText = null
         }
+    }
+
+    /** Shows both workers' progress, at most once a second. */
+    private fun show() {
+        val now = System.currentTimeMillis()
+        synchronized(this) {
+            if (now - shown < 1000) return
+            shown = now
+        }
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification())
     }
 
     /**
@@ -142,7 +200,9 @@ class DownloadService : Service() {
             Thread.sleep(100)
     }
 
-    private fun notification(message: String? = null, fraction: Double = 0.0): Notification {
+    private fun notification(): Notification {
+        val message = levelText ?: downloadText
+        val fraction = if (levelText != null) levelFraction else downloadFraction
         val open =
             PendingIntent.getActivity(
                 this,
@@ -154,7 +214,11 @@ class DownloadService : Service() {
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("Keyflow · Preparing music")
             .setContentText(message ?: "Getting your next songs ready")
-            .apply { if (message != null) setProgress(100, (fraction * 100).toInt().coerceIn(0, 100), false) }
+            .apply {
+                // Making a level shows its bar; the download running beside it is named below.
+                if (levelText != null) downloadText?.let(::setSubText)
+                if (message != null) setProgress(100, (fraction * 100).toInt().coerceIn(0, 100), false)
+            }
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -164,7 +228,8 @@ class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        worker.shutdown()
+        downloads.shutdown()
+        levels.shutdown()
         super.onDestroy()
     }
 

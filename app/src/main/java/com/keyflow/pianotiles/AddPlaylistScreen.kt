@@ -259,7 +259,8 @@ private fun MainActivity.showWarmUpStatus(page: android.widget.ScrollView?, id: 
 
 /** How soon a playlist's next level can be played, in a short line. */
 internal fun playlistStatus(state: Preparation.Readiness?) = when (state) {
-    is Preparation.Readiness.Waiting -> "First level playable in ${Preparation.describe(state.ms)}"
+    is Preparation.Readiness.Waiting -> "First level playable in ${Preparation.describe(state.ms)}" +
+        if (state.downloaded) ", or now as a quick level" else ""
     Preparation.Readiness.Offline -> "Waiting for an internet connection"
     Preparation.Readiness.Failed -> "Its first song couldn't be prepared · retrying soon"
     else -> "Ready to play"

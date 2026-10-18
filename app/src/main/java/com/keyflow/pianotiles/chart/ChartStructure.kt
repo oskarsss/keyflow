@@ -4,7 +4,7 @@ import kotlin.math.*
 
 /** Whole-song metadata for highlights and scrolling; never chooses or moves the learned notes. */
 object ChartStructure {
-    fun describe(features: MusicFeatures, detected: MusicalRhythm, learned: List<Chart.Note>): Chart {
+    fun describe(features: MusicFeatures, detected: MusicalRhythm, learned: List<Chart.Note>, method: String = ManiaChartModel.METHOD): Chart {
         val rhythm = detected.forGameplay()
         val notes = learned.filter {
             features.energy[(it.time * 50).toInt().coerceIn(0, features.frames - 1)] >= .0008f
@@ -43,7 +43,7 @@ object ChartStructure {
             Chart.Section(start, end, family, intensity)
         }
         val phase = rhythm.downbeats.firstOrNull()?.let { rhythm.beats.binarySearch(it).mod(4) } ?: 0
-        return Chart(features.duration, ManiaChartModel.METHOD, notes, rhythm.beats.toList(), phase,
+        return Chart(features.duration, method, notes, rhythm.beats.toList(), phase,
             rhythm.bpm, rhythm.downbeats.toList(), sections)
     }
 }

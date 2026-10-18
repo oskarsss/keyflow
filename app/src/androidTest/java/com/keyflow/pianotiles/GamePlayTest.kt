@@ -392,7 +392,8 @@ class GamePlayTest {
         val store = LibraryStore(context)
         store.save(playlist)
         val first = playlist.getJSONArray("songs").getJSONObject(0)
-        library.cacheSong(playlist.getString("id"), first.getString("id")) { _, _ -> }
+        library.download(playlist.getString("id"), first.getString("id")) { _, _ -> }
+        library.prepare(playlist.getString("id"), first.getString("id")) { _, _ -> }
         store.prefs.edit().putFloat("speed", 1f).putInt("timingOffset", 0).apply()
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity = it }

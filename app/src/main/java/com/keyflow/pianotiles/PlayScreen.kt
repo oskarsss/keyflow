@@ -90,9 +90,53 @@ internal fun MainActivity.prepareSong(song: JSONObject, index: Int) {
     ui.gap(body, 12)
     val status = ui.text("Preparing song…", 14f, Palette.TEXT, ui.medium)
     body.addView(status)
+    // Once the song is downloaded, a quick level lets the player go on before the full one is made.
+    val quick = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        visibility = View.GONE
+    }
+    ui.gap(quick, 28)
+    quick.addView(ui.button("Play now with a quick level", Ui.Style.PRIMARY, Glyph.Kind.PLAY) {
+        playQuickLevel(playlistId, song, index, run, status, quick)
+    }, LinearLayout.LayoutParams(dp(280), -2))
+    ui.gap(quick, 10)
+    quick.addView(ui.text("Made from the beat in seconds. The full level replaces it once it's ready.", 12.5f, Palette.MUTED)
+        .apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(280), -2))
+    body.addView(quick)
     Preparation.request(this, playlistId, song.optString("id"))
-    waitForSong(playlistId, song, index, run, status, bar)
+    waitForSong(playlistId, song, index, run, status, bar, quick, System.currentTimeMillis())
 }
+
+/** Makes the song's quick level and plays it; the full level keeps being made afterwards. */
+private fun MainActivity.playQuickLevel(playlistId: String, song: JSONObject, index: Int, run: Int, status: TextView, quick: View) {
+    quick.visibility = View.GONE
+    quick.tag = QUICK_STARTED
+    status.text = "Making a quick level…"
+    kotlin.concurrent.thread(name = "quick-level") {
+        val result = runCatching {
+            library.quickLevel(song) { fraction ->
+                handler.post { if (operation == run && quick.tag == QUICK_STARTED) status.text = "Making a quick level · ${(fraction * 100).toInt()}%" }
+            }
+            library.snapshot(playlistId) ?: error("Playlist not found. Import it again.")
+        }
+        handler.post {
+            if (operation != run || isDestroyed) return@post
+            result.onSuccess { playlist ->
+                val songs = playlist.getJSONArray("songs")
+                val updated = (0 until songs.length()).map(songs::getJSONObject).firstOrNull { it.optString("id") == song.optString("id") }
+                    ?: return@onSuccess showError(IllegalStateException("Song not found. Import the playlist again."))
+                store.save(playlist)
+                launchGame(updated, index)
+            }.onFailure { error ->
+                quick.tag = null
+                showError(error)
+            }
+        }
+    }
+}
+
+private const val QUICK_STARTED = "started"
 
 private fun MainActivity.waitForSong(
     playlistId: String,
@@ -101,6 +145,8 @@ private fun MainActivity.waitForSong(
     run: Int,
     status: TextView,
     bar: Ui.Meter,
+    quick: View,
+    openedAt: Long,
 ) {
     // Leaving the loading screen lets the song drop back to its place among the wanted songs.
     if (operation != run || isDestroyed) return Preparation.release(song.optString("id"))
@@ -122,17 +168,22 @@ private fun MainActivity.waitForSong(
                         showError(IllegalStateException("Song not found. Import the playlist again."))
                         return@post
                     }
+                    val downloaded = store.downloaded(updated)
+                    // An error from before the player opened the song is being retried now.
+                    val failed = updated.optString("status") == "error" && updated.optLong("failedAt") >= openedAt
+                    val making = quick.tag == QUICK_STARTED
                     when {
                         store.offline(updated) -> {
                             store.save(playlist!!)
                             launchGame(updated, index)
                         }
-                        updated.optString("status") == "error" -> {
+                        failed && !downloaded -> {
                             store.save(playlist!!)
                             showHome()
-                            showError(IllegalStateException("Couldn't prepare this song. Try again when you have an internet connection."))
+                            showError(IllegalStateException("Couldn't download this song. Try again when you have an internet connection."))
                         }
                         else -> {
+                            if (downloaded && !making) quick.visibility = View.VISIBLE
                             val target = downloadFraction(updated)
                             if (target != null && target > bar.fraction)
                                 android.animation.ValueAnimator.ofFloat(bar.fraction, target).apply {
@@ -140,8 +191,12 @@ private fun MainActivity.waitForSong(
                                     addUpdateListener { bar.fraction = it.animatedValue as Float }
                                     start()
                                 }
-                            status.text = downloadStage(updated)
-                            waitForSong(playlistId, song, index, run, status, bar)
+                            if (!making) status.text = when {
+                                failed -> "Couldn't make the full level"
+                                !downloaded && !Preparation.connected(this) -> "Waiting for an internet connection"
+                                else -> downloadStage(updated)
+                            }
+                            waitForSong(playlistId, song, index, run, status, bar, quick, openedAt)
                         }
                     }
                 }

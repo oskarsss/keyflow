@@ -29,7 +29,10 @@ class OnDeviceDownloadTest {
         assertTrue(playlist.getJSONArray("songs").length() > 0)
         LibraryStore(context).save(playlist)
         val first = playlist.getJSONArray("songs").getJSONObject(0)
-        library.cacheSong(playlist.getString("id"), first.getString("id")) { message, _ ->
+        library.download(playlist.getString("id"), first.getString("id")) { message, _ ->
+            android.util.Log.i("NativeDownloadTest", message.take(180))
+        }
+        library.prepare(playlist.getString("id"), first.getString("id")) { message, _ ->
             android.util.Log.i("NativeDownloadTest", message.take(180))
         }
         val store = LibraryStore(context)
@@ -60,8 +63,9 @@ class OnDeviceDownloadTest {
             }
             assertTrue(store.songFile(second, "jpg").isFile)
             assertEquals("ready", library.snapshot(id)!!.getJSONArray("songs").getJSONObject(1).getString("status"))
-            // The worker stops once nothing wanted is missing, and prepares nothing else.
-            while (Preparation.current != null || Preparation.next(context) != null) {
+            // The workers stop once nothing wanted is missing, and prepare nothing else.
+            while (Preparation.downloading != null || Preparation.making != null ||
+                Preparation.nextDownload(context) != null || Preparation.nextLevel(context) != null) {
                 check(SystemClock.elapsedRealtime() < deadline) { "The worker did not finish the wanted songs" }
                 Thread.sleep(500)
             }
