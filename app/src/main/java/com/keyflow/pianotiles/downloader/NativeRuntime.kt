@@ -27,6 +27,10 @@ class NativeRuntime(private val context: Context) {
     private val ffmpeg = File(native, "libffmpeg.so")
     private val quickJs = File(native, "libqjs.so")
     private val extractor = File(root, "yt-dlp")
+    // yt-dlp unpacked from its zip, so Python keeps its compiled code between runs instead of
+    // compiling the whole extractor again for every song.
+    private val unpacked = File(root, "yt-dlp-app")
+    private val cache = File(context.cacheDir, "yt-dlp")
     private val packages = listOf("python", "ffmpeg")
     private val processes = ConcurrentHashMap<String, Process>()
     private val cancelled = ConcurrentHashMap.newKeySet<String>()
@@ -59,7 +63,21 @@ class NativeRuntime(private val context: Context) {
             context.assets.open("downloader/yt-dlp").use { input ->
                 extractor.outputStream().use { input.copyTo(it) }
             }
+        unpackExtractor()
         initialized = true
+    }
+
+    /** Unpacks yt-dlp once, and again after it is updated. */
+    private fun unpackExtractor() {
+        val stamp = File(unpacked, ".bundle")
+        val signature = "${extractor.length()}:${extractor.lastModified()}"
+        if (stamp.isFile && stamp.readText() == signature && File(unpacked, "__main__.py").isFile) return
+        val temporary = File(root, "yt-dlp-app.part").apply { deleteRecursively(); mkdirs() }
+        unzip(extractor, temporary)
+        check(File(temporary, "__main__.py").isFile) { "The bundled download engine is incomplete." }
+        File(temporary, ".bundle").writeText(signature)
+        unpacked.deleteRecursively()
+        check(temporary.renameTo(unpacked)) { "The download engine could not be prepared." }
     }
 
     private fun unzip(archive: File, directory: File) {
@@ -99,13 +117,15 @@ class NativeRuntime(private val context: Context) {
         }
     }
 
-    private fun environment() =
+    private fun environment(scratch: File) =
         mapOf(
             "LD_LIBRARY_PATH" to
                 (packages.map { File(root, "$it/usr/lib").path } + native.path).joinToString(":"),
             "PYTHONHOME" to File(root, "python/usr").path,
             "SSL_CERT_FILE" to File(root, "python/usr/etc/tls/cert.pem").path,
-            "TMPDIR" to context.cacheDir.path,
+            "TMPDIR" to scratch.path,
+            // Progress lines arrive as they happen, not in one burst when yt-dlp finishes.
+            "PYTHONUNBUFFERED" to "1",
             "PATH" to "${native.path}:${System.getenv("PATH") ?: "/system/bin"}",
         )
 
@@ -121,11 +141,12 @@ class NativeRuntime(private val context: Context) {
         initialize(progress)
         request
             .addOption("--ignore-config")
-            .addOption("--no-cache-dir")
+            // Kept between songs: YouTube's player code and solved signatures.
+            .addOption("--cache-dir", cache.path)
             .addOption("--ffmpeg-location", ffmpeg.path)
             .addOption("--js-runtimes", "quickjs:${quickJs.path}")
             .addOption("--remote-components", "ejs:github")
-        val args = listOf(python.path, extractor.path) + request.buildCommand()
+        val args = listOf(python.path, unpacked.path) + request.buildCommand()
         return executeImpl(args, id, timeoutSeconds, outputFile, progress)
     }
 
@@ -164,6 +185,7 @@ class NativeRuntime(private val context: Context) {
         } finally {
             processes.remove(id)
             destroyTree(process)
+            scratch(id).deleteRecursively()
         }
     }
 
@@ -213,8 +235,12 @@ class NativeRuntime(private val context: Context) {
             processes.remove(id)
             destroyTree(process)
             watchdog.interrupt()
+            scratch(id).deleteRecursively()
         }
     }
+
+    /** Each job's own scratch folder, removed as soon as the job ends, whatever the outcome. */
+    private fun scratch(id: String) = File(work(context), id.replace(Regex("[^A-Za-z0-9_-]"), "_"))
 
     private fun start(command: List<String>, id: String): Process = synchronized(processLock) {
         check(!cancelled.remove(id)) { "Import cancelled." }
@@ -225,7 +251,7 @@ class NativeRuntime(private val context: Context) {
         val nice = File("/system/bin/nice")
         val background = if (nice.canExecute()) listOf(nice.path, "-n", "10") + command else command
         ProcessBuilder(background)
-            .apply { environment().putAll(this@NativeRuntime.environment()) }
+            .apply { environment().putAll(this@NativeRuntime.environment(scratch(id).apply { deleteRecursively(); mkdirs() })) }
             .start()
             .also { processes[id] = it }
     }
@@ -329,6 +355,8 @@ class NativeRuntime(private val context: Context) {
             extractor.toPath(),
             java.nio.file.StandardCopyOption.REPLACE_EXISTING,
         )
+        unpackExtractor()
+        cache.deleteRecursively()
         return release.getString("tag_name")
     }
 
@@ -346,4 +374,9 @@ class NativeRuntime(private val context: Context) {
     }
 
     private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02x".format(it) }
+
+    companion object {
+        /** Scratch space for the downloader and analysis, emptied when the app starts. */
+        fun work(context: Context) = File(context.cacheDir, "work").apply { mkdirs() }
+    }
 }

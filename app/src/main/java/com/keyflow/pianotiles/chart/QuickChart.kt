@@ -15,7 +15,7 @@ import kotlin.math.roundToInt
  * replaces it once made.
  */
 object QuickChart {
-    const val METHOD = "quick-distilled-v2"
+    const val METHOD = "quick-distilled-v3"
     private const val FPS = 50
     private const val SILENT = .0008f
     /** Candidates scoring at least this become tiles, strongest first, at least [GAP] apart. */
@@ -27,17 +27,14 @@ object QuickChart {
     private const val HOLD_SAME = .93
     private val BANDS = arrayOf(0 to 10, 10 to 25, 25 to 45, 45 to 70, 70 to 100, 100 to 128)
 
-    // Trained on the chart benchmark's 22 songs (artifacts/chart-eval-tools/distil.py). Features,
+    // Trained on the chart benchmark's 22 songs with QuickBeat's beats (artifacts/chart-eval-tools/
+    // distil.py and dspbeat.py). Features,
     // in order: onset strength, its six bands, beat, eighth, sixteenth, downbeat, bar loudness,
     // loudness within the bar, beat length, and how much the onset stands out from its neighbours.
-    private val MEAN = doubleArrayOf(1.06546, 1.01101, 1.01101, 0.99682, 1.02515, 1.07711, 1.26237, 0.24965, 0.250098,
-        0.500252, 0.078996, 0.501383, 0.00604347, 0.56479, -0.150562, 0.00128532, 0.00166516)
-    private val SCALE = doubleArrayOf(0.381139, 0.418408, 0.348897, 0.354063, 0.371398, 0.438827, 0.583906, 0.43281,
-        0.433069, 0.5, 0.269733, 0.279357, 0.320187, 0.171124, 0.534122, 0.527376, 0.526168)
-    private val NOTE = doubleArrayOf(0.257652, 0.336168, 0.0752557, -0.00668922, -0.0144738, -0.0215224, 0.17217,
-        0.381399, 0.10382, -0.42007, 0.0746486, 0.291203, 0.325069, 0.290928, 0.232174, 0.325836, 0.225171, 0.144587)
-    private val CHORDS = doubleArrayOf(-0.561071, 0.162079, 0.196192, -0.161877, 0.0616107, 0.109073, 0.280514, 0.381143,
-        -0.121211, -0.224939, 0.0396078, 0.533732, 0.468104, 0.256247, 0.800546, -0.214538, 0.325003, -3.07002)
+    private val MEAN = doubleArrayOf(1.0459, 0.997995, 0.996536, 0.984853, 1.01067, 1.05746, 1.23306, 0.250014, 0.250068, 0.499919, 0.0714324, 0.51061, -0.0298829, 0.57521, -0.152234, 0.000506383, 0.00170318)
+    private val SCALE = doubleArrayOf(0.388823, 0.41415, 0.350933, 0.355929, 0.3746, 0.441214, 0.590027, 0.433021, 0.433052, 0.5, 0.257546, 0.279074, 0.341289, 0.0907358, 0.535215, 0.531723, 0.529175)
+    private val NOTE = doubleArrayOf(0.415939, 0.454772, 0.0632733, -0.0177206, 0.00505501, -0.0467357, 0.124246, 0.202931, 0.211516, -0.358942, 0.0128776, 0.338067, 0.344719, 0.126002, 0.142583, 0.376797, 0.307909, 0.0539567)
+    private val CHORDS = doubleArrayOf(-0.680884, 0.196577, 0.138149, -0.0892386, 0.0300067, 0.127095, 0.128356, 0.23406, -0.089876, -0.124864, 0.000683489, 0.505068, 0.436757, 0.248506, 0.327193, 0.137889, 0.759547, -2.82789)
 
     private class Candidate(val time: Double, val frame: Int, val features: DoubleArray) {
         var tile = 0.0
@@ -49,9 +46,10 @@ object QuickChart {
         val beats = rhythm.beats
         require(beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
         val duration = features.duration
-        val total = rise(features, 0, MusicFeatures.BINS)
+        val rises = bandRises(features)
+        val total = DoubleArray(features.frames) { f -> rises.sumOf { it[f] } }
         val strength = relative(total)
-        val bands = BANDS.map { (from, to) -> relative(rise(features, from, to)) }
+        val bands = rises.map(::relative)
         val downbeats = rhythm.downbeats.takeIf { it.size >= 2 } ?: beats.filterIndexed { i, _ -> i % 4 == 0 }.toDoubleArray()
         val downbeatSet = downbeats.toHashSet()
         val intensity = barIntensity(features, downbeats)
@@ -164,17 +162,17 @@ object QuickChart {
         return 1 / (1 + kotlin.math.exp(-sum))
     }
 
-    /** How much the sound rises from each frame to the next in mel bins [from, to). */
-    private fun rise(features: MusicFeatures, from: Int, to: Int): DoubleArray {
+    /** How much the sound rises from each frame to the next in each of [BANDS], in one pass. */
+    private fun bandRises(features: MusicFeatures): Array<DoubleArray> {
         val bins = MusicFeatures.BINS
-        val out = DoubleArray(features.frames)
+        val bandOf = IntArray(bins) { bin -> BANDS.indexOfFirst { (from, to) -> bin in from until to } }
+        val out = Array(BANDS.size) { DoubleArray(features.frames) }
         for (f in 1 until features.frames) {
-            var sum = 0.0
-            for (b in from until to) {
-                val up = features.mel[f * bins + b] - features.mel[(f - 1) * bins + b]
-                if (up > 0) sum += up
+            val here = f * bins
+            for (b in 0 until bins) {
+                val up = features.mel[here + b] - features.mel[here - bins + b]
+                if (up > 0) out[bandOf[b]][f] += up
             }
-            out[f] = sum
         }
         return out
     }
@@ -185,7 +183,7 @@ object QuickChart {
         val block = 25
         val radius = 150
         for (start in values.indices step block) {
-            val window = values.copyOfRange(maxOf(0, start - radius), minOf(values.size, start + block + radius)).sorted()
+            val window = values.copyOfRange(maxOf(0, start - radius), minOf(values.size, start + block + radius)).apply { sort() }
             val position = .75 * (window.size - 1)
             val low = floor(position).toInt()
             val reference = window[low] + (window[minOf(low + 1, window.lastIndex)] - window[low]) * (position - low) + 1e-6

@@ -43,8 +43,9 @@ class GameView(
         val timeLimitMs: Long = 0,
         /** Score already earned earlier in an arcade run. */
         val baseScore: Int = 0,
-        /** Shown under the countdown, such as "Song 3 · Speed ×1.10". */
+        /** Shown under the countdown: the song's title, and below it [detail] such as "Song 3 · Speed ×1.10". */
         val caption: String = "",
+        val detail: String = "",
         val segmentDone: String = "Song complete!",
         /** Beat times in song seconds, used to pulse the stationary hit targets. */
         val beats: DoubleArray = DoubleArray(0),

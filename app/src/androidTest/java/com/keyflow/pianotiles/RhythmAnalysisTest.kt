@@ -61,7 +61,7 @@ class RhythmAnalysisTest {
         try {
             for ((index, source) in sources.withIndex()) {
                 val song = songs.getJSONObject(index)
-                source.copyTo(store.songFile(song, "mp3"), overwrite = true)
+                source.copyTo(store.audioFile(song), overwrite = true)
                 // A quick level is playable in seconds; the full level replaces it.
                 val quickStarted = android.os.SystemClock.elapsedRealtime()
                 library.quickLevel(song)
@@ -133,7 +133,7 @@ class RhythmAnalysisTest {
             library.deletePlaylist(id)
             for (index in 0 until songs.length()) {
                 val song = songs.getJSONObject(index)
-                store.songFile(song, "mp3").delete()
+                store.audioFile(song).delete()
                 store.chartFile(song).delete()
             }
         }

@@ -34,7 +34,7 @@ class PreparedChartTest {
     fun audioAndAnIncompleteChartDoNotBecomeReadyToPlay() {
         val store = LibraryStore(RuntimeEnvironment.getApplication())
         val song = JSONObject().put("id", "preparedChartTest")
-        val audio = store.songFile(song, "mp3")
+        val audio = store.audioFile(song)
         val chart = store.chartFile(song)
         val temporary = java.io.File(chart.path + ".part")
         try {

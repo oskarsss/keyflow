@@ -34,7 +34,7 @@ class StorageManagementTest {
     )
 
     private fun cached(song: JSONObject, age: Int) {
-        val audio = store.songFile(song, "mp3")
+        val audio = store.audioFile(song)
         audio.writeText("audio")
         assertTrue(audio.setLastModified(now - age * day))
         store.chartFile(song).writeText("{}")
@@ -102,7 +102,7 @@ class StorageManagementTest {
         val shared = other.getJSONArray("songs").getJSONObject(5).put("id", list[5].getString("id"))
         library.save(other)
         for (song in list) cached(song, 60)
-        assertEquals(6 to list.sumOf { store.songFile(it, "mp3").length() + store.chartFile(it).length() }, library.usage(list))
+        assertEquals(6 to list.sumOf { store.audioFile(it).length() + store.chartFile(it).length() }, library.usage(list))
 
         assertTrue(store.keepsDownloads(library.setKeepDownloads(mine.getString("id"), true)))
         assertEquals(0, library.pruneUnused(30, now))

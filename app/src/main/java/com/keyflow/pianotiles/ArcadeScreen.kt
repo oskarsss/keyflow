@@ -7,10 +7,12 @@ import android.widget.*
 import com.keyflow.pianotiles.arcade.Arcade
 import com.keyflow.pianotiles.game.GameSession
 import com.keyflow.pianotiles.library.Preparation
+import com.keyflow.pianotiles.library.SongTitle
 import com.keyflow.pianotiles.ui.Glyph
 import com.keyflow.pianotiles.ui.Palette
 import com.keyflow.pianotiles.ui.Ui
 import java.util.Locale
+import org.json.JSONObject
 
 private fun MainActivity.modeColors(mode: Arcade.Mode) =
     if (mode == Arcade.Mode.TIME) intArrayOf(0xFF38BDF8.toInt(), 0xFF6366F1.toInt())
@@ -223,4 +225,15 @@ internal fun MainActivity.finishRun() {
     )
     resultsTiming(body)
     if (r.score > previous && r.score > 0) celebrate()
+}
+
+/** A song's title as Arcade shows it: levels the player hasn't reached keep theirs hidden. */
+internal fun MainActivity.reachedTitle(song: JSONObject): String {
+    val id = song.optString("id")
+    val reached = song.optBoolean("demo") || store.completed(song) || library.readPlaylists().any { playlist ->
+        val songs = playlist.optJSONArray("songs") ?: return@any false
+        val next = (0 until songs.length()).firstOrNull { !store.completed(songs.getJSONObject(it)) } ?: songs.length()
+        (0..minOf(next, songs.length() - 1)).any { songs.getJSONObject(it).optString("id") == id }
+    }
+    return SongTitle.display(song.optString("title"), reached)
 }

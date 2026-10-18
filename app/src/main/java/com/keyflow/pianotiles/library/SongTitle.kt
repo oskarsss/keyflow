@@ -1,17 +1,18 @@
 package com.keyflow.pianotiles.library
 
-/** Keep a small hint for locked levels without revealing short titles or splitting Unicode pairs. */
+/**
+ * A locked level shows the first five characters of its title and *** for the rest. At least
+ * three characters stay hidden, so a short title isn't given away; emoji stay whole.
+ */
 object SongTitle {
+    private const val SHOWN = 5
+    private const val HIDDEN = 3
+
     fun display(title: String, unlocked: Boolean): String {
         if (unlocked) return title
-        return Regex("\\S+").replace(title) { word ->
-            val points = word.value.codePoints().toArray()
-            val visible = when {
-                points.size >= 3 -> 2
-                points.size >= 2 -> 1
-                else -> 0
-            }
-            String(points, 0, visible) + "*".repeat(points.size - visible)
-        }
+        val points = title.trim().codePoints().toArray()
+        if (points.isEmpty()) return ""
+        val visible = minOf(SHOWN, points.size - HIDDEN).coerceAtLeast(0)
+        return String(points, 0, visible) + "***"
     }
 }

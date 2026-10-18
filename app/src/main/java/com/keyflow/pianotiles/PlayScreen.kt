@@ -261,7 +261,7 @@ internal fun MainActivity.launchGame(song: JSONObject, index: Int, stage: Stage?
                     }
                 } ?: DoubleArray(0)
             val rhythm = Rhythm(beats, chart.optInt("barPhase", 0), chart.optDouble("bpm", 0.0).takeIf { it > 0 } ?: song.optDouble("bpm", 0.0))
-            val path = store.songFile(song, if (song.optBoolean("demo")) "wav" else "mp3").path
+            val path = (if (song.optBoolean("demo")) store.songFile(song, "wav") else store.audioFile(song)).path
             handler.post {
                 if (operation != op || isDestroyed || run !== r) return@post
                 store.prefs.edit().putInt("layout.$id", layout.key).apply()
@@ -315,12 +315,14 @@ private fun MainActivity.showGame(song: JSONObject, session: GameSession, clock:
     applyInsets(root, false)
     val prefs = store.prefs
     val r = run
-    val caption =
+    // Every level names its song; Arcade keeps the titles of levels not reached yet hidden.
+    val caption = if (r == null) song.optString("title") else reachedTitle(song)
+    val detail =
         when {
             r == null -> if (stage != null) "Highlights · up to 2½ minutes" else ""
             r.mode == Arcade.Mode.ENDLESS ->
                 "Song ${r.songs + 1}  ·  Speed ×" + String.format(Locale.US, "%.2f", r.speed ?: 1f)
-            else -> "Song ${r.songs + 1}  ·  ${song.optString("title")}"
+            else -> "Song ${r.songs + 1}"
         }
     val speed = r?.speed ?: prefs.getFloat("speed", 1f)
     lateinit var view: GameView
@@ -341,6 +343,7 @@ private fun MainActivity.showGame(song: JSONObject, session: GameSession, clock:
                 timeLimitMs = if (r?.mode == Arcade.Mode.TIME) r.timeLeftMs else 0,
                 baseScore = r?.score ?: 0,
                 caption = caption,
+                detail = detail,
                 segmentDone = if (r != null) "Next song!" else "Song complete!",
                 beats = rhythm.beats,
                 barPhase = rhythm.barPhase,
@@ -414,7 +417,7 @@ internal fun MainActivity.showPause() {
     panel.addView(ui.title("Paused", 30f), LinearLayout.LayoutParams(-2, -2))
     ui.gap(panel, 8)
     panel.addView(
-        ui.oneLine(ui.text(currentSong?.optString("title") ?: "", 15f, Palette.MUTED)).apply {
+        ui.oneLine(ui.text(currentSong?.let { if (run != null) reachedTitle(it) else it.optString("title") } ?: "", 15f, Palette.MUTED)).apply {
             gravity = Gravity.CENTER
         },
     )

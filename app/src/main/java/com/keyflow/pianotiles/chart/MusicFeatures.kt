@@ -1,6 +1,5 @@
 package com.keyflow.pianotiles.chart
 
-import java.io.BufferedInputStream
 import java.io.InputStream
 import kotlin.math.*
 
@@ -18,6 +17,7 @@ class MusicFeatures(
         const val BINS = 128
         private const val FFT = 1024
         private const val HOP = 441
+        private val ROOT_FFT = sqrt(FFT.toDouble())
 
         private fun mel(hz: Double): Double = if (hz < 1000) hz / (200.0 / 3)
             else 15 + ln(hz / 1000) / (ln(6.4) / 27)
@@ -69,7 +69,7 @@ class MusicFeatures(
                 fft.transform()
                 pitch.fill(0.0)
                 for (k in spectrum.indices) {
-                    spectrum[k] = hypot(fft.re[k], fft.im[k]) / sqrt(FFT.toDouble())
+                    spectrum[k] = sqrt(fft.re[k] * fft.re[k] + fft.im[k] * fft.im[k]) / ROOT_FFT
                     if (k in 3..140) pitch[pitches[k]] += spectrum[k]
                 }
                 for (filter in filters) {
@@ -85,9 +85,12 @@ class MusicFeatures(
             return MusicFeatures(mel.toArray(), chroma.toArray(), energy.toArray(), pcm.count.toDouble() / RATE)
         }
 
-        private class Pcm(stream: InputStream) {
-            private val input = BufferedInputStream(stream, 32768)
+        private class Pcm(private val input: InputStream) {
             private val ring = DoubleArray(2048)
+            // Read in blocks: a call per byte was most of the frontend's time.
+            private val bytes = ByteArray(32768)
+            private var filled = 0
+            private var position = 0
             var count = 0
                 private set
             var ended = false
@@ -95,13 +98,22 @@ class MusicFeatures(
 
             fun ensure(index: Int) {
                 while (!ended && count <= index) {
-                    val a = input.read()
-                    val b = if (a < 0) -1 else input.read()
-                    if (b < 0) ended = true
-                    else {
-                        ring[count % ring.size] = ((b shl 8) or a).toShort() / 32768.0
-                        count++
+                    if (filled - position < 2) {
+                        // Keep a byte left over from the last block; a sample can straddle two.
+                        val left = filled - position
+                        if (left == 1) bytes[0] = bytes[position]
+                        filled = left
+                        position = 0
+                        val read = input.read(bytes, filled, bytes.size - filled)
+                        if (read < 0) { ended = true; return }
+                        filled += read
+                        continue
                     }
+                    val a = bytes[position].toInt() and 0xFF
+                    val b = bytes[position + 1].toInt()
+                    position += 2
+                    ring[count % ring.size] = ((b shl 8) or a).toShort() / 32768.0
+                    count++
                 }
             }
 

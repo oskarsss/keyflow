@@ -11,7 +11,7 @@ and the game draws on a `Canvas`. Everything runs on the phone.
 | --- | --- |
 | *(root)* | `MainActivity`, which owns the app's state and lifecycle, and one file per screen. Screens are `MainActivity` extension functions: `AddPlaylistScreen`, `PlaylistsScreen` (including each playlist's settings), `HomeScreen`, `ArcadeScreen`, `SettingsScreen`, `PlayScreen` (loading, play, pause, results) and shared `Scaffolding`. |
 | `game` | Gameplay: `GameSession` (rules, scoring, lives), `GameView` (the frame loop and touch), `Highway` (perspective, scenery and drawing primitives), `NoteRenderer` (tiles, holds and slides), `HitFeedback` (flashes, banners and haptics), `GameHud` (score bar, countdown and ending), `GameClock` (audio clock), `TimingCalibration`, `TileVariety` (lane layouts and decoration), `HitParticles`. |
-| `chart` | Turning audio into a level: `MusicFeatures` and `BeatThis` (beats), `ChartAudio`, `ManiaTokens` and `ManiaChartModel` (tile placement), `QuickChart` (a level from the beat alone), `ThumbChart` (two-thumb gate), `ChartStructure` and `LevelExcerpt` (sections, journey highlight), `PreparedChart` (saved format). |
+| `chart` | Turning audio into a level: `MusicFeatures` and `BeatThis` (beats), `ChartAudio`, `ManiaTokens` and `ManiaChartModel` (tile placement), `QuickBeat` and `QuickChart` (quick levels), `ThumbChart` (two-thumb gate), `ChartStructure` and `LevelExcerpt` (sections, journey highlight), `PreparedChart` (saved format). |
 | `library` | Playlists and downloads: `OnDeviceLibrary` (playlists, downloads, full and quick levels, storage cleanup), `LibraryStore` (files, progress, settings), `PreparationPlan` (what is wanted, in order), `Preparation` (each worker's next song, the waiting song, the queues, readiness and download conditions), `PreparationTime` (learned times and the two workers' schedule), `DownloadService` (the download and level workers), `PlaylistUrl`, `SongTitle`, `Covers`. |
 | `arcade` | Endless and Time Attack: `Arcade` (runs, song pool, buffer rules) and `ArcadeSongs` (song choice and play history). |
 | `ui` | `Ui` (palette and view helpers), `Glyph` (icons), `TileArtwork`, `Confetti`. |
@@ -62,7 +62,13 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    so the game has the phone to itself half the time. Songs from step 1 aren't held back.
 3. **Prepare.** `OnDeviceLibrary.download` fetches the audio and cover (35% of the progress bar)
    into a temporary folder and moves them into the songs folder, which marks the song downloaded;
-   the downloaded title, artist and length go to every playlist that has the song.
+   the downloaded title, artist and length go to every playlist that has the song. The audio is
+   kept as YouTube sends it, AAC where it has it, since converting it took longer than the
+   download. yt-dlp first asks as YouTube's Vision Pro client, whose links need no JavaScript
+   challenge (solving one in QuickJS took most of a download's time), and falls back to its usual
+   clients; only the fallback's error can mark a song as unavailable. yt-dlp runs unpacked, so
+   Python keeps its compiled code between songs, with unbuffered output so progress shows as it
+   happens.
    `OnDeviceLibrary.prepare` then finds the beats (15%) and runs the chart model (the rest).
    Progress stays in memory; the playlist file is saved only when a song's status changes. The models are stored uncompressed in the APK
    and read from it in place, and `ModelSessions` keeps them loaded while songs follow one
@@ -78,12 +84,15 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    model's levels on the chart benchmark pick the tiles (strongest first, at least 170 ms apart)
    and which become chords; holds come where the harmony and loudness stay steady until the
    hand's next tile, hands take turns and the lane within a hand follows the melody up or down.
-   On held-out benchmark songs it reproduces about 73% of the full level's tiles (the earlier
-   beat-only quick level managed 43%), and about 84% on songs charted on a phone. It needs only the beat, so it
-   takes seconds; when the level worker has already found this song's beat, the quick level
-   reuses it and is ready at once. It is saved beside the song and counts as ready everywhere,
-   Arcade included, while the song stays in the level worker's queue; the full level replaces it
-   and deletes it.
+   Its beat comes from `QuickBeat` rather than the beat model: the tempo from the autocorrelation
+   of the onset strength and Ellis' dynamic programme for the beat positions, in milliseconds
+   where Beat This! takes tens of seconds, which made a quick level about 15 times faster. The
+   classifiers were trained on `QuickBeat`'s beats. On held-out benchmark songs it reproduces
+   about 74% of the full level's tiles (75% on Beat This! beats; the earlier beat-only quick
+   level managed 43%), and about 79% on songs charted on a phone. When the level worker has
+   already found this song's beat, the quick level uses that instead and is ready at once. It is
+   saved beside the song and counts as ready everywhere, Arcade included, while the song stays in
+   the level worker's queue; the full level replaces it and deletes it.
 4. **Play.** `PlayScreen` builds a `GameSession` from the chart, applies a fresh lane layout and
    decoration, and starts `GameView` on a `MediaPlayer`.
 
@@ -137,9 +146,10 @@ the median lean of the player's hits after each song with at least 20 hits.
 | Where | What |
 | --- | --- |
 | `files/playlists/<id>.json` | One playlist: title, shuffled songs with their status, `preloadCount`, `keepDownloads`, `downloadAll`. |
-| `files/songs/<songId>.mp3`, `.jpg` | A downloaded song and its cover. Built-in songs use `.wav` copied from assets. |
+| `files/songs/<songId>.audio`, `.jpg` | A downloaded song as YouTube sent it (AAC or Opus; the player and FFmpeg read the format from the file) and its cover. Built-in songs use `.wav` copied from assets. |
 | `files/songs/<songId>.chart.json`, `.quick.json` | The song's full level, or its quick level until the full one is made. |
-| `cache/downloads/<songId>/` | A download in progress, and the log of a failed one. |
+| `cache/downloads/<songId>/` | A download in progress; removed when it ends, whatever the outcome. |
+| `cache/work/` | Scratch space: each downloader or FFmpeg job's own folder and the chart model's temporary audio, each removed when its job ends. The folder is emptied when the app starts, for jobs Android ended midway. |
 | Preferences `keyflow` | Settings, the selected playlist, per-song progress (`song.<id>.completed`, `.stars`, `.score`, `.lastPlayed`, `.highlight` for the last cut played), XP, streak, arcade bests and history, the learned download time and chart speed (`preparation.downloadMs`, `preparation.chartMsPerSecond`), and the Wi-Fi and charger conditions (`downloads.wifiOnly`, `downloads.chargingOnly`). |
 
 During development, data from an earlier build is not migrated (see `AGENTS.md`). A change to the

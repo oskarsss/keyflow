@@ -68,6 +68,12 @@ class LibraryStore(private val context: Context) {
                 context.assets.open(asset).use { input -> output.outputStream().use { input.copyTo(it) } }
     }
 
+    /**
+     * A downloaded song's audio, kept as YouTube sent it (AAC or Opus); the player and FFmpeg
+     * tell the format from the file itself.
+     */
+    fun audioFile(song: JSONObject) = songFile(song, AUDIO)
+
     /** The level made by the chart model. */
     fun chartFile(song: JSONObject) = songFile(song, "chart.json")
 
@@ -79,10 +85,10 @@ class LibraryStore(private val context: Context) {
 
     /** Ready to play: the audio and a full or quick level are on the phone. */
     fun offline(song: JSONObject) = song.optBoolean("demo") ||
-        songFile(song, "mp3").isFile && (chartFile(song).isFile || quickChartFile(song).isFile)
+        audioFile(song).isFile && (chartFile(song).isFile || quickChartFile(song).isFile)
 
     /** The audio is on the phone, so only the level is left to make. */
-    fun downloaded(song: JSONObject) = song.optBoolean("demo") || songFile(song, "mp3").isFile
+    fun downloaded(song: JSONObject) = song.optBoolean("demo") || audioFile(song).isFile
 
     /**
      * Which songs are downloaded, playable and fully prepared, from one look at the songs folder
@@ -96,13 +102,13 @@ class LibraryStore(private val context: Context) {
             return id.isNotEmpty() && "$id.$suffix" in names
         }
 
-        fun downloaded(song: JSONObject) = song.optBoolean("demo") || has(song, "mp3")
+        fun downloaded(song: JSONObject) = song.optBoolean("demo") || has(song, AUDIO)
 
         /** Playable with its full or its quick level. */
-        fun playable(song: JSONObject) = song.optBoolean("demo") || has(song, "mp3") && (has(song, "chart.json") || has(song, "quick.json"))
+        fun playable(song: JSONObject) = song.optBoolean("demo") || has(song, AUDIO) && (has(song, "chart.json") || has(song, "quick.json"))
 
         /** Playable with its full level; a quick one still has its full level to come. */
-        fun prepared(song: JSONObject) = song.optBoolean("demo") || has(song, "mp3") && has(song, "chart.json")
+        fun prepared(song: JSONObject) = song.optBoolean("demo") || has(song, AUDIO) && has(song, "chart.json")
 
         fun quick(song: JSONObject) = !prepared(song) && playable(song)
     }
@@ -184,6 +190,7 @@ class LibraryStore(private val context: Context) {
 
     companion object {
         private val UNSAFE_ID = Regex("[^A-Za-z0-9_-]")
+        const val AUDIO = "audio"
         private const val UNAVAILABLE = "songs.unavailable"
         private const val UNAVAILABLE_UNTOLD = "songs.unavailableUntold"
 

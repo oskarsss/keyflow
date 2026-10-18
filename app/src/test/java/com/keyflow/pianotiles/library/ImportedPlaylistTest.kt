@@ -93,7 +93,7 @@ class ImportedPlaylistTest {
         val song = first.getJSONArray("songs").getJSONObject(0)
         song.put("title", "Downloaded title").put("artist", "Downloaded artist")
             .put("duration", 123)
-        store.songFile(song, "mp3").writeText("cached audio")
+        store.audioFile(song).writeText("cached audio")
         store.chartFile(song).writeText("{\"duration\":123,\"notes\":[]}")
         library.save(first)
         val second = library.createPlaylist(raw(), Random(2))
@@ -115,7 +115,7 @@ class ImportedPlaylistTest {
         songs.getJSONObject(0).put("status", "caching")
         songs.getJSONObject(1).put("status", "ready")
         val cached = songs.getJSONObject(2)
-        store.songFile(cached, "mp3").writeText("audio")
+        store.audioFile(cached).writeText("audio")
         store.chartFile(cached).writeText("{}")
         library.save(playlist)
         val recovered = OnDeviceLibrary(context).snapshot(playlist.getString("id"))!!
@@ -135,7 +135,7 @@ class ImportedPlaylistTest {
             .putBoolean("song.${songs.getJSONObject(1).getString("id")}.completed", true).commit()
         var window = library.setPreload(playlist.getString("id"), 2)
         val cached = songs.getJSONObject(2)
-        store.songFile(cached, "mp3").writeText("audio")
+        store.audioFile(cached).writeText("audio")
         store.chartFile(cached).writeText("{}")
         assertEquals(ids(playlist).subList(2, 4), store.upcoming(window).map { it.getString("id") })
         // The next level and the locked one after it are always kept, whatever the setting.
@@ -156,7 +156,7 @@ class ImportedPlaylistTest {
         val first = library.createPlaylist(raw(), Random(5))
         library.createPlaylist(raw(), Random(6))
         val song = first.getJSONArray("songs").getJSONObject(0)
-        store.songFile(song, "mp3").writeText("audio")
+        store.audioFile(song).writeText("audio")
         store.chartFile(song).writeText("{}")
         song.put("status", "ready").put("error", "Old error")
         library.save(first)
@@ -242,7 +242,7 @@ class ImportedPlaylistTest {
         val shared = JSONObject().put("id", "songid00000")
         val own = JSONObject().put("id", "songid00001")
         for (song in listOf(shared, own)) {
-            store.songFile(song, "mp3").writeText("audio")
+            store.audioFile(song).writeText("audio")
             store.chartFile(song).writeText("{}")
         }
         store.prefs.edit().putBoolean("song.songid00001.completed", true).commit()
@@ -250,7 +250,7 @@ class ImportedPlaylistTest {
         assertNull(library.snapshot(first.getString("id")))
         assertEquals(listOf(second.getString("id")), library.savedPlaylists().map { it.getString("id") })
         assertTrue(store.offline(shared))
-        assertFalse(store.songFile(own, "mp3").exists())
+        assertFalse(store.audioFile(own).exists())
         assertFalse(store.chartFile(own).exists())
         assertTrue(store.completed(own))
     }
@@ -271,10 +271,10 @@ class ImportedPlaylistTest {
     @Test
     fun oneFolderListingAnswersWhichSongsArePlayable() {
         val songs = (0 until 4).map { JSONObject().put("id", "songid%05d".format(it)) } + JSONObject().put("id", "x").put("demo", true)
-        store.songFile(songs[0], "mp3").writeText("audio")
+        store.audioFile(songs[0]).writeText("audio")
         store.chartFile(songs[0]).writeText("{}")
         // Audio without a chart isn't playable yet.
-        store.songFile(songs[1], "mp3").writeText("audio")
+        store.audioFile(songs[1]).writeText("audio")
         val offline = store.offlineCheck()
         assertEquals(songs.map(store::offline), songs.map(offline))
         assertEquals(listOf(true, false, false, false, true), songs.map(offline))

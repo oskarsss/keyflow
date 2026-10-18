@@ -117,9 +117,14 @@ internal class GameHud(
             if (started) return
             var y = cy + dp(100f)
             if (options.caption.isNotEmpty()) {
-                text(canvas, options.caption, 16f, Palette.TEXT, cx, y, face = heavy)
-                y += dp(48f)
+                text(canvas, fit(options.caption, 18f, heavy), 18f, Palette.TEXT, cx, y, face = heavy)
+                y += dp(26f)
             }
+            if (options.detail.isNotEmpty()) {
+                text(canvas, fit(options.detail, 14f, medium), 14f, Palette.MUTED, cx, y)
+                y += dp(22f)
+            }
+            if (options.caption.isNotEmpty() || options.detail.isNotEmpty()) y += dp(26f)
             if (options.hint) {
                 text(canvas, "Tap when the tile edge reaches the green line", 15f, Palette.TEXT, cx, y)
                 text(canvas, "Hold green tiles · slide with the white ring", 13f, Palette.MUTED, cx, y + dp(22f))
@@ -152,6 +157,25 @@ internal class GameHud(
                 text(canvas, detail, 12.5f, Palette.MUTED, left + dp(68f), y + dp(16f), Paint.Align.LEFT)
                 y += dp(72f)
             }
+        }
+    }
+
+    private val fitted = HashMap<String, String>()
+
+    /** [value] shortened with an ellipsis to fit the screen's width at [size]. */
+    private fun fit(value: String, size: Float, face: android.graphics.Typeface): String {
+        fitted["$size $value"]?.let { return it }
+        with(highway) {
+            paint.textSize = dp(size)
+            paint.typeface = face
+            val room = w - dp(48f)
+            var shown = value
+            if (paint.measureText(shown) > room) {
+                while (shown.length > 1 && paint.measureText("$shown…") > room) shown = shown.dropLast(1)
+                shown = shown.trimEnd() + "…"
+            }
+            fitted["$size $value"] = shown
+            return shown
         }
     }
 

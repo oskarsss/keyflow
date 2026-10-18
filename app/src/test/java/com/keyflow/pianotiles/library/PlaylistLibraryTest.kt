@@ -77,7 +77,7 @@ class PlaylistLibraryTest {
             assertTrue(titles.contains("1 of 3 cleared"))
             assertTrue(titles.contains("Violet Hour"))
             assertFalse(titles.contains("Afterglow"))
-            assertTrue(titles.contains("Af*******"))
+            assertTrue(titles.contains("After***"))
             assertTrue(nodes.any { it.contentDescription == "Blurred locked album cover for level 3" })
             assertFalse(nodes.any { it.contentDescription?.contains("Afterglow") == true })
             controller.pause().stop()

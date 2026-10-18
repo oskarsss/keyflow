@@ -57,7 +57,7 @@ class PreparationTest {
         assertEquals(Reason.NEXT, Preparation.nextDownload(context)?.reason)
         assertNull(Preparation.nextLevel(context))
         val small = PreparationPlan.wanted(Preparation.inputs(context)).filterNot { PreparationPlan.big(it.reason) }
-        for (item in small) store.songFile(item.song, "mp3").writeText("audio")
+        for (item in small) store.audioFile(item.song).writeText("audio")
         // Downloaded songs get their levels made on any connection.
         assertEquals(small.first().id, Preparation.nextLevel(context)?.id)
         for (item in small) store.chartFile(item.song).writeText("{}")
@@ -71,7 +71,7 @@ class PreparationTest {
         assertEquals("a charger", Preparation.bigDownloadsWaitFor(context))
         assertNull(Preparation.nextDownload(context))
         // A charger also holds back making their levels; Wi-Fi doesn't.
-        store.songFile(ahead.song, "mp3").writeText("audio")
+        store.audioFile(ahead.song).writeText("audio")
         assertEquals("a charger", Preparation.bigLevelsWaitFor(context))
         assertNull(Preparation.nextLevel(context))
         charging(true)
@@ -102,7 +102,7 @@ class PreparationTest {
         library.save(playlist)
         // The locked level is downloaded, with a quick level to play meanwhile.
         val locked = songs.getJSONObject(1)
-        store.songFile(locked, "mp3").writeText("audio")
+        store.audioFile(locked).writeText("audio")
         store.quickChartFile(locked).writeText("{}")
         val queues = Preparation.queues(context)
         val wanted = PreparationPlan.wanted(Preparation.inputs(context)).map { it.id }

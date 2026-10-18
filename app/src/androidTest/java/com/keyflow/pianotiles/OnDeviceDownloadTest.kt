@@ -46,7 +46,7 @@ class OnDeviceDownloadTest {
         val id = playlist.getString("id")
         // Exercise the real worker after leaving the UI, with the smallest Download ahead window.
         val second = playlist.getJSONArray("songs").getJSONObject(1)
-        store.songFile(second, "mp3").delete()
+        store.audioFile(second).delete()
         library.setPreload(id, LibraryStore.MIN_PRELOAD)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity {

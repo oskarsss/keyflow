@@ -10,6 +10,7 @@ import com.keyflow.pianotiles.chart.ManiaChartModel
 import com.keyflow.pianotiles.chart.MusicFeatures
 import com.keyflow.pianotiles.chart.MusicalRhythm
 import com.keyflow.pianotiles.chart.PreparedChart
+import com.keyflow.pianotiles.chart.QuickBeat
 import com.keyflow.pianotiles.chart.QuickChart
 import com.keyflow.pianotiles.downloader.NativeRuntime
 import com.keyflow.pianotiles.downloader.YTDLRequest
@@ -40,6 +41,11 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         private set
 
     init {
+        clearLeftovers()
+        // Songs downloaded as MP3 before the audio was kept as YouTube sends it keep working.
+        File(context.filesDir, "songs").listFiles { file -> file.extension == "mp3" }?.forEach {
+            it.renameTo(File(it.parentFile, "${it.nameWithoutExtension}.${LibraryStore.AUDIO}"))
+        }
         // Songs that failed as unavailable before such songs were taken out go now.
         for (song in savedPlaylists().flatMap(::songsOf))
             if (song.optString("status") == "error" && gone(song.optString("error"))) dropUnavailable(song)
@@ -72,7 +78,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             .addOption("--yes-playlist")
             .addOption("--socket-timeout", 20)
         // Large playlists can exceed the runtime's bounded diagnostic output buffer.
-        val metadata = File.createTempFile("playlist-", ".json", context.cacheDir)
+        val metadata = File.createTempFile("playlist-", ".json", NativeRuntime.work(context))
         try {
             runtime.execute(request, id, 600, outputFile = metadata) {
                 if (it.startsWith("Preparing")) progress(it)
@@ -204,7 +210,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         for (entry in Arcade.pool(playlists)) {
             if (!store.prefs.getBoolean("smartStorage", true)) break
             if (entry.demo || entry.id in kept || entry.id in playing) continue
-            val audio = store.songFile(entry.song, "mp3")
+            val audio = store.audioFile(entry.song)
             if (!audio.isFile) continue
             // A fresh download gets a full retention period, even if it was played long ago.
             val lastUse = maxOf(store.lastPlayed(entry.song), audio.lastModified())
@@ -242,7 +248,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         for (i in 0 until songs.length()) {
             val song = songs.getJSONObject(i)
             if (song.optString("id") in kept || song.optBoolean("demo")) continue
-            for (file in listOf(store.songFile(song, "mp3"), store.chartFile(song), store.quickChartFile(song), store.songFile(song, "jpg")))
+            for (file in listOf(store.audioFile(song), store.chartFile(song), store.quickChartFile(song), store.songFile(song, "jpg")))
                 file.delete()
         }
     }
@@ -382,20 +388,16 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             progress("$title · $message", fraction)
         }
         updateSong(playlistId, songId) { it.put("status", "caching").put("error", "") }
-        report("Downloading", 0.0)
+        report("Finding the song", 0.0)
         val folder = File(context.cacheDir, "downloads/$songId").apply { deleteRecursively(); mkdirs() }
-        val audio = File(folder, "source.mp3")
         val info = File(folder, "source.info.json")
         val started = System.currentTimeMillis()
         try {
-            val request =
+            // YouTube's audio is kept as it comes, AAC where it has it: converting it to MP3 took
+            // longer than the download and lost quality.
+            fun request(client: String?) =
                 YTDLRequest("https://www.youtube.com/watch?v=$songId")
-                    .addOption("--format", "bestaudio")
-                    .addOption("--extract-audio")
-                    .addOption("--audio-format", "mp3")
-                    .addOption("--audio-quality", 0)
-                    .addOption("--add-metadata")
-                    .addOption("--embed-thumbnail")
+                    .addOption("--format", "bestaudio[ext=m4a]/bestaudio")
                     .addOption("--write-thumbnail")
                     .addOption("--convert-thumbnails", "jpg")
                     .addOption("--write-info-json")
@@ -406,25 +408,33 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     .addOption("--max-filesize", "100M")
                     .addOption("--match-filters", "duration <= 1200")
                     .addOption("--output", File(folder, "source.%(ext)s").path)
+                    .apply { client?.let { addOption("--extractor-args", "youtube:player_client=$it") } }
             var lastProgress = 0L
-            runtime.execute(request, "song-$songId", 600) { line ->
+            fun follow(line: String) {
                 val now = System.currentTimeMillis()
-                if (now - lastProgress > 750 && (line.contains("[download]") || line.contains("[ExtractAudio]"))) {
-                    lastProgress = now
-                    val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)?.toDoubleOrNull()
-                    when {
-                        line.contains("[ExtractAudio]") -> report("Converting audio", DOWNLOAD_SHARE - .03)
-                        percent != null -> report("Downloading", percent.coerceIn(0.0, 100.0) / 100 * (DOWNLOAD_SHARE - .03))
-                    }
-                }
+                if (now - lastProgress < 250 || !line.contains("[download]")) return
+                lastProgress = now
+                val percent = Regex("([0-9.]+)%").find(line)?.groupValues?.get(1)?.toDoubleOrNull() ?: return
+                report("Downloading", .03 + percent.coerceIn(0.0, 100.0) / 100 * (DOWNLOAD_SHARE - .03))
             }
-            check(audio.isFile) { "This song could not be downloaded, or exceeds 20 minutes." }
+            // The Vision Pro client gets its links without YouTube's JavaScript challenge, which
+            // took most of a download's time; yt-dlp's usual clients are the fallback.
+            try {
+                runtime.execute(request(FAST_CLIENT), "song-$songId", 600, progress = ::follow)
+            } catch (fast: Throwable) {
+                android.util.Log.i("Keyflow", "Fast download of $songId failed, trying the usual way: ${fast.message?.take(200)}")
+                folder.listFiles().orEmpty().forEach { it.deleteRecursively() }
+                report("Finding the song", .01)
+                runtime.execute(request(null), "song-$songId", 600, progress = ::follow)
+            }
+            val audio = folder.listFiles().orEmpty().firstOrNull { it.name.startsWith("source.") && it.extension in AUDIO_FORMATS }
+                ?: error("This song could not be downloaded, or exceeds 20 minutes.")
             val metadata = runCatching { JSONObject(info.readText()) }.getOrDefault(JSONObject())
             File(folder, "source.jpg").takeIf { it.exists() }?.let {
                 Files.move(it.toPath(), store.songFile(song, "jpg").toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
             // The audio arriving in the songs folder is what marks the song downloaded.
-            Files.move(audio.toPath(), store.songFile(song, "mp3").toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.move(audio.toPath(), store.audioFile(song).toPath(), StandardCopyOption.REPLACE_EXISTING)
             // Downloaded metadata belongs to the song, so every playlist that has it gets the same.
             updateSongEverywhere(songId) { value ->
                 value.put("status", "pending")
@@ -432,23 +442,21 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
                     .put("artist", metadata.optString("artist").ifBlank { metadata.optString("uploader", value.optString("artist")) })
                 metadata.optDouble("duration", 0.0).takeIf { it > 0 }?.let { value.put("duration", it) }
             }
-            folder.deleteRecursively()
             return System.currentTimeMillis() - started
         } catch (error: Throwable) {
-            File(folder, "download.log").writeText(error.message ?: "Download failed")
-            if (gone(error.message.orEmpty())) {
-                folder.deleteRecursively()
-                dropUnavailable(song)
-            } else failed(playlistId, songId, error, connectionLost(error))
+            // The reason is saved with the song; the half-finished files are of no use.
+            if (gone(error.message.orEmpty())) dropUnavailable(song)
+            else failed(playlistId, songId, error, connectionLost(error))
             throw error
         } finally {
+            folder.deleteRecursively()
             preparing.remove(songId)
         }
     }
 
     private fun prepareNow(playlistId: String, songId: String, shouldYield: () -> Boolean, progress: (String, Double) -> Unit): Long? {
         val (song, title) = locate(playlistId, songId)
-        val audio = store.songFile(song, "mp3")
+        val audio = store.audioFile(song)
         if (!audio.isFile) return null
         if (store.chartFile(song).isFile) {
             updateSong(playlistId, songId) { it.put("status", "ready") }
@@ -509,28 +517,32 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         }
 
     /**
-     * Makes a quick level for a downloaded song from its beat, in seconds instead of minutes, so
-     * the player can go on while the full level is still being made; the full one replaces it.
-     * Reuses the beat when the full level's analysis already found it. [progress] gets 0–1.
+     * Makes a quick level for a downloaded song in a few seconds, so the player can go on while the
+     * full level is still being made; the full one replaces it. Its beat comes from [QuickBeat]
+     * instead of the beat model, unless the full level's analysis has already found it.
+     * [progress] gets 0–1.
      */
     fun quickLevel(song: JSONObject, progress: (Double) -> Unit = {}) {
         val songId = song.getString("id")
         if (store.offline(song)) return
-        val audio = store.songFile(song, "mp3")
+        val audio = store.audioFile(song)
         check(audio.isFile) { "This song isn't downloaded yet." }
-        // The full level may be finding this song's beat right now; sharing it beats repeating it.
-        while (analysed[songId] == null) {
-            val (stage, fraction) = preparing[songId] ?: break
-            if (stage != FINDING_BEAT) break
-            progress(((fraction - DOWNLOAD_SHARE) / (1 - DOWNLOAD_SHARE) / BEAT_SHARE).coerceIn(0.0, .95))
-            Thread.sleep(100)
-        }
-        if (store.offline(song)) return
         val (features, rhythm) = analysed[songId] ?: run {
-            progress(0.0)
-            val features = runtime.audioSamples(audio, "quick-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
-            progress(.4)
-            features to BeatThis(context).analyze(features) { progress(.4 + it * .0055) }
+            // Decoding is most of the work; the bytes read so far show how far it got.
+            val expected = PreparationTime.seconds(song) * MusicFeatures.RATE * 2
+            val features = runtime.audioSamples(audio, "quick-features-$songId", MusicFeatures.RATE) { input ->
+                var read = 0L
+                var shown = 0L
+                val counted = object : java.io.FilterInputStream(input) {
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                        super.read(buffer, offset, length).also { count ->
+                            if (count > 0) read += count
+                            if (read - shown > 1 shl 20) { shown = read; progress((read / expected).coerceAtMost(.95)) }
+                        }
+                }
+                MusicFeatures.readPcm(counted)
+            }
+            features to QuickBeat.analyze(features)
         }
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
         val chart = QuickChart.generate(features, rhythm)
@@ -558,14 +570,14 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         shouldYield: () -> Boolean,
         progress: (String, Double) -> Unit,
     ): Chart {
-        progress(FINDING_BEAT, 0.0)
+        progress("Finding the beat", 0.0)
         val features = runtime.audioSamples(audio, "rhythm-features-$songId", MusicFeatures.RATE, MusicFeatures::readPcm)
         val rhythm = BeatThis(context).analyze(features) { if (shouldYield()) throw Yielded() }
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
         // A quick level asked for while the tiles are placed can start from this beat.
         analysed[songId] = features to rhythm
         progress("Placing tiles", BEAT_SHARE)
-        val temporary = File.createTempFile("chart-audio-", ".pcm", context.cacheDir)
+        val temporary = File.createTempFile("chart-audio-", ".pcm", NativeRuntime.work(context))
         val learned = try {
             runtime.audioSamples(audio, "chart-model-$songId", ChartAudio.RATE) { ChartAudio.readPcm(it, temporary) }.use {
                 ManiaChartModel(context).analyze(it, rhythm) { percent ->
@@ -598,6 +610,19 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             }
         }
 
+    /**
+     * Temporary files of work a killed process never finished: the chart model's audio, yt-dlp's
+     * scratch files and unfinished downloads. Nothing can be using them when the app starts.
+     */
+    private fun clearLeftovers() {
+        NativeRuntime.work(context).deleteRecursively()
+        File(context.cacheDir, "downloads").deleteRecursively()
+        // Earlier versions kept these straight in the cache folder.
+        context.cacheDir.listFiles { file ->
+            file.isFile && (file.name.startsWith("chart-audio-") || file.name.startsWith("playlist-") || file.name.startsWith("tmp"))
+        }?.forEach { it.delete() }
+    }
+
     /** Cleanup waits for the song being downloaded and the level being made to finish. */
     private fun <T> cleanup(block: () -> T): T = synchronized(downloadLock) { synchronized(chartLock) { block() } }
 
@@ -611,6 +636,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         private val revisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
         private val SONG_ID = Regex("[A-Za-z0-9_-]{11}")
         private val INDEX_NAME = Regex("[A-Za-z0-9_-]{1,80}\\.json")
+        /** Gets YouTube's links without solving its JavaScript challenge, which is slow on a phone. */
+        private const val FAST_CLIENT = "visionos"
+        private val AUDIO_FORMATS = setOf("m4a", "webm", "opus", "mp4", "mp3", "ogg")
         private val UNAVAILABLE = Regex("Video unavailable|This video is (not|no longer) available|Private video|" +
             "video has been removed|not (made )?available in your country|account associated with this video has been terminated|" +
             "confirm your age|members-only|Join this channel", RegexOption.IGNORE_CASE)
@@ -633,7 +661,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
         /** Shares of a song's preparation: the download, then beats before the slower chart model. */
         const val DOWNLOAD_SHARE = .35
         const val BEAT_SHARE = .15
-        private const val FINDING_BEAT = "Finding the beat"
         const val MAX_TITLE = 60
 
         @Volatile private var instance: OnDeviceLibrary? = null

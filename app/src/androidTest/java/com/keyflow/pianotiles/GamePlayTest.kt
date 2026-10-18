@@ -326,7 +326,7 @@ class GamePlayTest {
             shell("svc data disable")
             // MediaPlayer sniffs the WAV container; the cached-song path is intentionally .mp3.
             context.assets.open("demo/first-light.wav").use { input ->
-                store.songFile(song, "mp3").outputStream().use(input::copyTo)
+                store.audioFile(song).outputStream().use(input::copyTo)
             }
             val notes = org.json.JSONArray((0..3).map {
                 org.json.JSONObject().put("time", 1.5 + it * .5).put("lane", it)
@@ -375,7 +375,7 @@ class GamePlayTest {
             if (data) shell("svc data enable")
             root.deleteRecursively()
             if (backup.exists()) check(backup.renameTo(root)) else root.mkdirs()
-            store.songFile(song, "mp3").delete()
+            store.audioFile(song).delete()
             store.chartFile(song).delete()
             store.prefs.edit().putString("playlistId", previousSelection).apply()
         }
