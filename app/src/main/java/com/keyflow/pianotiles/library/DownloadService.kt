@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import com.keyflow.pianotiles.MainActivity
 import com.keyflow.pianotiles.R
@@ -31,10 +33,20 @@ class DownloadService : Service() {
     @Volatile private var levelText: String? = null
     @Volatile private var levelFraction = 0.0
     private var shown = 0L
+    // A foreground service keeps the app alive but not the processor: with the screen off the
+    // phone would sleep and stall both workers, so the processor stays on while either works.
+    private lateinit var awake: PowerManager.WakeLock
+    // And Wi-Fi stays at full speed while a song downloads.
+    private lateinit var wifi: WifiManager.WifiLock
 
     override fun onCreate() {
         super.onCreate()
         library = OnDeviceLibrary.get(this)
+        awake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Keyflow:preparation")
+            .apply { setReferenceCounted(false) }
+        @Suppress("DEPRECATION")
+        wifi = applicationContext.getSystemService(WifiManager::class.java).createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Keyflow:download")
+            .apply { setReferenceCounted(false) }
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(
                 NotificationChannel(CHANNEL, "Song downloads", NotificationManager.IMPORTANCE_LOW),
@@ -79,6 +91,8 @@ class DownloadService : Service() {
                 // connection. A song that fails on its own is marked and passed over.
                 while (failures < 2) {
                     val item = runCatching { next(this@DownloadService, skip) }.getOrNull() ?: break
+                    // Each song renews the hold, so a stuck worker can't keep the phone awake for long.
+                    awake.acquire(AWAKE_MS)
                     when (val error = work(item)) {
                         null -> failures = 0
                         else -> {
@@ -98,6 +112,7 @@ class DownloadService : Service() {
 
     private fun stopWhenDone() {
         if (downloads.running.get() || levels.running.get()) return
+        if (awake.isHeld) awake.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelfResult(lastStart)
     }
@@ -107,6 +122,7 @@ class DownloadService : Service() {
         val songId = item.id
         android.util.Log.i("Keyflow", "Downloading $songId from ${item.playlistId}: ${item.reason}")
         Preparation.downloading = Preparation.Current(item.song)
+        wifi.acquire()
         return try {
             library.download(item.playlistId, songId) { message, fraction ->
                 downloadText = message
@@ -121,6 +137,7 @@ class DownloadService : Service() {
             Preparation.release(songId)
             error
         } finally {
+            if (wifi.isHeld) wifi.release()
             Preparation.downloading = null
             downloadText = null
         }
@@ -230,6 +247,8 @@ class DownloadService : Service() {
     override fun onDestroy() {
         downloads.shutdown()
         levels.shutdown()
+        if (awake.isHeld) awake.release()
+        if (wifi.isHeld) wifi.release()
         super.onDestroy()
     }
 
@@ -238,5 +257,7 @@ class DownloadService : Service() {
         private const val NOTIFICATION = 15
         private const val YIELD_CHECK_MS = 5_000L
         private const val MAX_REST_MS = 10_000L
+        /** Longer than any one download or level takes. */
+        private const val AWAKE_MS = 30 * 60_000L
     }
 }

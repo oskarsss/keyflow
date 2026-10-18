@@ -39,7 +39,9 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    aren't on the phone; the other makes full levels for wanted songs that are downloaded but don't
    have one. Each reads a fresh plan before every song, so neither waits for the other: levels
    are made while the next songs download, and without a connection. A finished download wakes
-   the level worker. The service stops when both are done; `Preparation.wake` starts it when
+   the level worker. While either works, the service keeps the processor awake, and Wi-Fi at
+   full speed during a download, so locking the phone doesn't stall them; each song renews the
+   hold for at most 30 minutes, and it ends when both are done. The service stops when both are done; `Preparation.wake` starts it when
    something wanted is missing, and again when the phone gets a connection, Wi-Fi or a charger
    while the app is open. A plan reads each playlist only after it changes and checks which songs
    are downloaded, playable and fully prepared from one listing of the songs folder, so large
