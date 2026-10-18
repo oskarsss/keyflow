@@ -47,9 +47,15 @@ class StorageUiTest {
             shadowOf(android.os.Looper.getMainLooper()).idle()
             views(activity.window.decorView).first { it.contentDescription == "Settings" }.performClick()
             assertTrue(texts(activity).contains("Smart storage management"))
-            assertTrue(texts(activity).contains("Remove unused songs after"))
+            assertTrue(texts(activity).contains("Remove after"))
             assertTrue(texts(activity).contains("Make full levels"))
             assertTrue(texts(activity).contains("Clear ALL downloaded songs"))
+            // A whole switch row flips its setting, and storage's timer hides while smart storage is off.
+            views(activity.window.decorView).first { it.contentDescription == "Vibration" && it !is android.widget.Switch }.performClick()
+            assertFalse(store.prefs.getBoolean("haptics", true))
+            views(activity.window.decorView).first { it.contentDescription == "Smart storage management" && it !is android.widget.Switch }.performClick()
+            assertFalse(store.prefs.getBoolean("smartStorage", true))
+            assertFalse(views(activity.window.decorView).first { it is TextView && it.text == "Remove after" }.isShown)
         }
     }
 
@@ -77,7 +83,7 @@ class StorageUiTest {
                 shadowOf(android.os.Looper.getMainLooper()).idle()
             }
             assertTrue(texts(activity).any { it.startsWith("0 of 4 songs downloaded") })
-            assertTrue(texts(activity).contains("0 of 4 songs · 0 B"))
+            assertTrue(texts(activity).contains("0 B"))
             assertFalse(texts(activity).contains("Download ahead"))
             views(activity.window.decorView).first { it.contentDescription == "Download settings for Road trip" }.performClick()
             for (label in listOf("Download ahead", "Keep downloaded songs", "Download all songs", "Remove downloaded songs", "Rename", "Delete playlist"))

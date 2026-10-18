@@ -11,7 +11,6 @@ import android.view.View
 import android.widget.*
 import com.keyflow.pianotiles.arcade.Arcade
 import com.keyflow.pianotiles.arcade.ArcadeSongs
-import com.keyflow.pianotiles.chart.ModelSessions
 import com.keyflow.pianotiles.game.GameView
 import com.keyflow.pianotiles.library.Covers
 import com.keyflow.pianotiles.library.LibraryStore
@@ -28,10 +27,13 @@ internal enum class Screen { WELCOME, IMPORT, WARMUP, HOME, PLAYLISTS, PLAYLIST,
 internal class Stage(val startMs: Int, val endMs: Int)
 
 /**
- * A journey row whose subtitle, trailing status and quick-level badge update while songs are
- * prepared.
+ * A journey row whose subtitle, trailing status and [mark] (quick level, or not downloaded)
+ * update while songs are prepared.
  */
-internal class SongRow(val index: Int, val subtitle: TextView, val trailing: FrameLayout, val quick: View)
+internal class SongRow(val index: Int, val subtitle: TextView, val trailing: FrameLayout, val mark: ImageView)
+
+/** What a journey node's badge says about its song; a song with its full level has none. */
+internal enum class SongMark { QUICK, MISSING }
 
 /**
  * The single activity. It owns the app's state and lifecycle; each screen is built by
@@ -89,8 +91,9 @@ class MainActivity : Activity() {
     internal var heroCheckedAt = 0L
     /** The next level's quick-level badge and its song's id. */
     internal var heroQuick: Pair<String, View>? = null
-    // Songs playing with a quick level while their full level is made; polling keeps it current.
-    internal var quickSongs: Set<String> = emptySet()
+    // Songs that aren't downloaded, or play with a quick level while their full level is made;
+    // polling keeps it current.
+    internal var songMarks: Map<String, SongMark> = emptyMap()
     internal var polls = 0
 
     internal val library: OnDeviceLibrary
@@ -105,7 +108,6 @@ class MainActivity : Activity() {
         ui = Ui(this)
         covers = Covers(store)
         Preparation.watch(this)
-        maintenance.execute { ModelSessions.removeOldCopies(this) }
         window.statusBarColor = Palette.BG
         window.navigationBarColor = Palette.BG
         if (intent.action == Intent.ACTION_SEND) {

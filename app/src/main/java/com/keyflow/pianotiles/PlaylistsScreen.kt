@@ -159,8 +159,8 @@ internal fun MainActivity.showPlaylistSettings(id: String, from: Screen? = null)
         }
     }
     divider(downloads)
-    settingRow(downloads, "Keep downloaded songs", "Smart storage won't remove them") {
-        toggle(store.keepsDownloads(playlist), "Keep downloaded songs") { keep -> io.execute { library.setKeepDownloads(id, keep) } }
+    switchRow(downloads, "Keep downloaded songs", "Smart storage won't remove them", store.keepsDownloads(playlist)) { keep ->
+        io.execute { library.setKeepDownloads(id, keep) }
     }
     divider(downloads)
     actionRow(downloads, Glyph.Kind.DOWNLOAD, "Download all songs", "Keep every song available without internet", Palette.TEXT) {

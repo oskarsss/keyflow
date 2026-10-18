@@ -9,7 +9,7 @@ and the game draws on a `Canvas`. Everything runs on the phone.
 
 | Package | What it holds |
 | --- | --- |
-| *(root)* | `MainActivity`, which owns the app's state and lifecycle, and one file per screen. Screens are `MainActivity` extension functions: `AddPlaylistScreen`, `PlaylistsScreen` (including each playlist's settings), `HomeScreen`, `ArcadeScreen`, `SettingsScreen`, `PlayScreen` (loading, play, pause, results) and shared `Scaffolding`. |
+| *(root)* | `MainActivity`, which owns the app's state and lifecycle, and one file per screen. Screens are `MainActivity` extension functions: `AddPlaylistScreen`, `PlaylistsScreen` (including each playlist's settings), `HomeScreen`, `ArcadeScreen`, `SettingsScreen`, `PlayScreen` (loading, play, pause, results), `SongStatus` (what a journey badge means, with live progress) and shared `Scaffolding`. |
 | `game` | Gameplay: `GameSession` (rules, scoring, lives), `GameView` (the frame loop and touch), `Highway` (perspective, scenery and drawing primitives), `NoteRenderer` (tiles, holds and slides), `HitFeedback` (flashes, banners and haptics), `GameHud` (score bar, countdown and ending), `GameClock` (audio clock), `TimingCalibration`, `TileVariety` (lane layouts and decoration), `HitParticles`. |
 | `chart` | Turning audio into a level: `MusicFeatures` and `BeatThis` (beats), `ChartAudio`, `ManiaTokens` and `ManiaChartModel` (tile placement), `QuickBeat` and `QuickChart` (quick levels), `ThumbChart` (two-thumb gate), `ChartStructure` and `LevelExcerpt` (sections, journey highlight), `PreparedChart` (saved format). |
 | `library` | Playlists and downloads: `OnDeviceLibrary` (playlists, downloads, full and quick levels, storage cleanup), `LibraryStore` (files, progress, settings), `PreparationPlan` (what is wanted, in order), `Preparation` (each worker's next song, the waiting song, the queues, readiness and download conditions), `PreparationTime` (learned times and the two workers' schedule), `DownloadService` (the download and level workers), `PlaylistUrl`, `SongTitle`, `Covers`. |
@@ -95,8 +95,10 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    already found this song's beat, the quick level uses that instead and is ready at once. It is
    saved beside the song and counts as ready everywhere, Arcade included, while the song stays in
    the level worker's queue; the full level replaces it and deletes it. On the home screen a
-   half-disc badge marks songs playing with a quick level while their full level is to come;
-   tapping it explains the two and follows the full level's progress. *Settings › Make full
+   half-disc badge marks songs playing with a quick level while their full level is to come,
+   and a download badge marks unlocked songs not on the phone yet. Tapping either opens
+   `SongStatus`: a short explanation and a live status card with the work's steps, a bar split
+   into those steps, and the time left. *Settings › Make full
    levels* (on by default) can turn the level worker off: songs then keep their quick levels,
    and a full level being made stops at its next step.
 4. **Play.** `PlayScreen` builds a `GameSession` from the chart, applies a fresh lane layout and

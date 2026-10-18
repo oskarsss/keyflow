@@ -244,7 +244,7 @@ internal fun MainActivity.launchGame(song: JSONObject, index: Int, stage: Stage?
                 val endLane = note.optInt("endLane", lane)
                 check(time.isFinite() && time >= 0 && time >= previous && lane in 0..3 &&
                     kind in listOf("tap", "hold", "slide") && duration.isFinite() && duration >= 0 &&
-                    endLane in 0..3 && (kind == "tap" || duration > 0)) { "This song's chart could not be read. Try preparing it again in Settings." }
+                    endLane in 0..3 && (kind == "tap" || duration > 0)) { "This song's level could not be read." }
                 list.add(GameSession.Note(time, lane, kind, duration, endLane))
                 previous = time
             }

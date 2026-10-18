@@ -311,7 +311,8 @@ class NativeRuntime(private val context: Context) {
     }
 
     @Synchronized
-    fun updateExtractor(progress: (String) -> Unit): String {
+    /** Installs the latest yt-dlp; false when the one on the phone already is the latest. */
+    fun updateExtractor(progress: (String) -> Unit): Boolean {
         synchronized(processLock) {
             check(processes.isEmpty()) { "Wait for current music downloads to finish before updating." }
             updating = true
@@ -323,7 +324,7 @@ class NativeRuntime(private val context: Context) {
         }
     }
 
-    private fun downloadExtractorUpdate(progress: (String) -> Unit): String {
+    private fun downloadExtractorUpdate(progress: (String) -> Unit): Boolean {
         initialize(progress)
         progress("Checking for a downloader update…")
         val release =
@@ -344,6 +345,8 @@ class NativeRuntime(private val context: Context) {
         check(expected.matches(Regex("[a-f0-9]{64}"))) {
             "The update has no checksum. The bundled downloader remains available."
         }
+        if (hex(MessageDigest.getInstance("SHA-256").digest(extractor.readBytes())) == expected) return false
+        progress("Downloading the update…")
         val bytes = fetch(url)
         check(hex(MessageDigest.getInstance("SHA-256").digest(bytes)) == expected) {
             "Downloader update checksum mismatch"
@@ -357,14 +360,14 @@ class NativeRuntime(private val context: Context) {
         )
         unpackExtractor()
         cache.deleteRecursively()
-        return release.getString("tag_name")
+        return true
     }
 
     private fun fetch(url: String): ByteArray {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 15000
         connection.readTimeout = 30000
-        connection.setRequestProperty("User-Agent", "Keyflow/1.1.0")
+        connection.setRequestProperty("User-Agent", "Keyflow")
         try {
             check(connection.responseCode == 200) { "Unable to check downloader updates." }
             return connection.inputStream.use { it.readBytes() }

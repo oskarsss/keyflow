@@ -184,19 +184,19 @@ class ImportedPlaylistTest {
         val first = library.createPlaylist(raw(), Random(8))
         val second = library.createPlaylist(raw(), Random(9))
         val songs = first.getJSONArray("songs")
+        val id = first.getString("id")
         val gone = songs.getJSONObject(0)
-        gone.put("status", "error").put("error", "ERROR: [youtube] ${gone.getString("id")}: Video unavailable\n")
+        library.downloadFailed(id, gone, IllegalStateException("ERROR: [youtube] ${gone.getString("id")}: Video unavailable\n"))
         // YouTube's rate limit reads much the same, but passes.
         val busy = songs.getJSONObject(1)
-        busy.put("status", "error").put("error", "ERROR: [youtube] x: Video unavailable. This content isn't available, try again later.")
-        library.save(first)
-        // A new start takes the unavailable song out of every playlist, keeping the order.
-        val restarted = OnDeviceLibrary(context)
+        library.downloadFailed(id, busy, IllegalStateException("ERROR: [youtube] x: Video unavailable. This content isn't available, try again later."))
+        // The unavailable song leaves every playlist, keeping the order.
         for (playlist in listOf(first, second)) {
-            val left = ids(restarted.snapshot(playlist.getString("id"))!!)
+            val left = ids(library.snapshot(playlist.getString("id"))!!)
             assertEquals(ids(playlist).filter { it != gone.getString("id") }, left)
         }
-        assertTrue(busy.getString("id") in ids(restarted.snapshot(first.getString("id"))!!))
+        assertTrue(busy.getString("id") in ids(library.snapshot(id)!!))
+        val restarted = library
         assertTrue(store.unavailable(gone.getString("id")))
         // The player is told once.
         assertEquals(listOf(gone.getString("title")), store.takeUnavailableNotice())

@@ -3,7 +3,6 @@ package com.keyflow.pianotiles.chart
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
-import java.io.File
 import java.io.FileInputStream
 import java.nio.channels.FileChannel
 import java.util.concurrent.Executors
@@ -68,12 +67,6 @@ internal object ModelSessions {
             val bytes = FileInputStream(file.fileDescriptor).channel.use { it.map(FileChannel.MapMode.READ_ONLY, file.startOffset, file.declaredLength) }
             OrtEnvironment.getEnvironment().createSession(bytes, options)
         }
-
-    /** Removes the copies of the models that earlier versions unpacked from the APK. */
-    fun removeOldCopies(context: Context) {
-        File(context.noBackupFilesDir, "chart-model").deleteRecursively()
-        File(context.noBackupFilesDir, "rhythm").deleteRecursively()
-    }
 
     private fun release() {
         if (--users == 0) closing = timer.schedule(::closeIdle, IDLE_MS, TimeUnit.MILLISECONDS)

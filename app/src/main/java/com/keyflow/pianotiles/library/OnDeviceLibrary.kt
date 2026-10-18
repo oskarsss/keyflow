@@ -42,13 +42,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
 
     init {
         clearLeftovers()
-        // Songs downloaded as MP3 before the audio was kept as YouTube sends it keep working.
-        File(context.filesDir, "songs").listFiles { file -> file.extension == "mp3" }?.forEach {
-            it.renameTo(File(it.parentFile, "${it.nameWithoutExtension}.${LibraryStore.AUDIO}"))
-        }
-        // Songs that failed as unavailable before such songs were taken out go now.
-        for (song in savedPlaylists().flatMap(::songsOf))
-            if (song.optString("status") == "error" && gone(song.optString("error"))) dropUnavailable(song)
         // A process restart cannot have any active downloads. Repair persisted transient states.
         for (playlist in savedPlaylists()) {
             var changed = false
@@ -444,9 +437,8 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             }
             return System.currentTimeMillis() - started
         } catch (error: Throwable) {
-            // The reason is saved with the song; the half-finished files are of no use.
-            if (gone(error.message.orEmpty())) dropUnavailable(song)
-            else failed(playlistId, songId, error, connectionLost(error))
+            // The half-finished files are of no use.
+            downloadFailed(playlistId, song, error)
             throw error
         } finally {
             folder.deleteRecursively()
@@ -488,6 +480,11 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             analysed.remove(songId)
         }
     }
+
+    /** Saves why a download failed with the song, or takes the song out when YouTube won't serve it. */
+    internal fun downloadFailed(playlistId: String, song: JSONObject, error: Throwable) =
+        if (gone(error.message.orEmpty())) dropUnavailable(song)
+        else failed(playlistId, song.optString("id"), error, connectionLost(error))
 
     /**
      * Takes a song YouTube won't serve out of every playlist, so it can't hold up a journey, and
@@ -620,10 +617,6 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     private fun clearLeftovers() {
         NativeRuntime.work(context).deleteRecursively()
         File(context.cacheDir, "downloads").deleteRecursively()
-        // Earlier versions kept these straight in the cache folder.
-        context.cacheDir.listFiles { file ->
-            file.isFile && (file.name.startsWith("chart-audio-") || file.name.startsWith("playlist-") || file.name.startsWith("tmp"))
-        }?.forEach { it.delete() }
     }
 
     /** Cleanup waits for the song being downloaded and the level being made to finish. */
