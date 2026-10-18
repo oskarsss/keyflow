@@ -22,21 +22,21 @@ class QuickChartTest {
     }
 
     @Test
-    fun tilesFollowTheBeatAddLoudOffBeatsAndStayPlayable() {
+    fun tilesLandOnAudibleAttacksIncludingOffBeatsAndStayPlayable() {
         val (features, rhythm) = song()
-        val chart = QuickChart.generate(features, rhythm, seed = 7)
+        val chart = QuickChart.generate(features, rhythm)
         assertEquals(QuickChart.METHOD, chart.method)
-        assertTrue(chart.notes.size > 60)
-        // Every tile sits on a beat or halfway between two.
-        assertTrue(chart.notes.all { note -> abs(note.time * 4 - Math.round(note.time * 4)) < .004 })
-        val offBeats = chart.notes.filter { abs(it.time * 2 - Math.round(it.time * 2)) > .1 }
-        assertTrue(offBeats.isNotEmpty())
-        // Off-beats only come where the music hits hard, in the loud half.
-        assertTrue(offBeats.all { it.time >= 30 })
+        val attacks = (0 until 3000 step 25).map { it / 50.0 } + (1512 until 3000 step 25).map { it / 50.0 }
+        // Every tile sits on an attack; the silent sixteenths between them get none.
+        assertTrue(chart.notes.all { note -> attacks.any { abs(it - note.time) < .03 } })
+        // Most attacks become tiles, the hard off-beats of the loud half too.
+        val tiles = chart.notes.map { it.time }.distinct()
+        assertTrue(tiles.size > attacks.count { it in 1.0..59.2 } * .8)
+        assertTrue(tiles.any { abs(it * 2 - Math.round(it * 2)) > .1 && it >= 30 })
         assertEquals(ThumbChart.makePlayable(chart.notes), chart.notes)
         assertTrue(chart.notes.all { it.lane in 0..3 })
         // Sections and bars come along, so highlights work as for a full level.
         assertTrue(chart.sections.isNotEmpty())
-        assertEquals(chart, QuickChart.generate(features, rhythm, seed = 7))
+        assertEquals(chart, QuickChart.generate(features, rhythm))
     }
 }

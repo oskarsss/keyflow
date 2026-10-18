@@ -507,7 +507,7 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
             features to BeatThis(context).analyze(features) { progress(.4 + it * .0055) }
         }
         check(rhythm.beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
-        val chart = QuickChart.generate(features, rhythm, songId.hashCode())
+        val chart = QuickChart.generate(features, rhythm)
         // The full level may have arrived meanwhile; it always wins.
         if (!store.chartFile(song).isFile) replace(store.quickChartFile(song), PreparedChart.encode(chart).toString())
         updateSongEverywhere(songId) { it.put("status", "ready") }

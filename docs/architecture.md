@@ -66,13 +66,19 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    counts as ready only when its audio and a level exist. Opening a level reads that file; no
    model runs at play time.
    **Quick levels.** While a downloaded song's full level is still being made, the loading screen
-   offers *Play now with a quick level*. `QuickChart` puts tiles on the beat through the audible
-   bars, adds off-beats where the music hits hard in the loudest bars, holds where a downbeat
-   rings on and chords on strong downbeats, then passes them through `ThumbChart`. It needs only
-   the beat, so it takes seconds; when the level worker has already found this song's beat, the
-   quick level reuses it and is ready at once. It is saved beside the song and counts as ready
-   everywhere, Arcade included, while the song stays in the level worker's queue; the full level
-   replaces it and deletes it.
+   offers *Play now with a quick level*. `QuickChart` treats every sixteenth of the gameplay beat
+   as a candidate tile and describes it by its onset strength in six mel bands (each against the
+   75th percentile of the six seconds around it), its place in the bar, its bar's loudness and
+   how much it stands out from its neighbours. Two logistic classifiers distilled from the full
+   model's levels on the chart benchmark pick the tiles (strongest first, at least 170 ms apart)
+   and which become chords; holds come where the harmony and loudness stay steady until the
+   hand's next tile, hands take turns and the lane within a hand follows the melody up or down.
+   On held-out benchmark songs it reproduces about 73% of the full level's tiles (the earlier
+   beat-only quick level managed 43%), and about 84% on songs charted on a phone. It needs only the beat, so it
+   takes seconds; when the level worker has already found this song's beat, the quick level
+   reuses it and is ready at once. It is saved beside the song and counts as ready everywhere,
+   Arcade included, while the song stays in the level worker's queue; the full level replaces it
+   and deletes it.
 4. **Play.** `PlayScreen` builds a `GameSession` from the chart, applies a fresh lane layout and
    decoration, and starts `GameView` on a `MediaPlayer`.
 

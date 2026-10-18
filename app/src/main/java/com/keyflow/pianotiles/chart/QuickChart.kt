@@ -1,91 +1,215 @@
 package com.keyflow.pianotiles.chart
 
 import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.ln1p
 import kotlin.math.roundToInt
 
 /**
- * A level made from the beat in a moment, for a song whose full level is still being made. Tiles
- * follow the beat through the audible bars, with off-beats where the music hits hard in its loud
- * parts, holds over bars that ring on and chords on strong downbeats. The full level replaces it.
+ * A level made in a moment, for a song whose full level is still being made. Every sixteenth of
+ * the beat is a candidate tile, described by how sharply the sound rises there in six frequency
+ * bands, its place in the bar and how loud its bar is. Two small classifiers, distilled from the
+ * full chart model's levels, decide which candidates become tiles and which of those chords; on
+ * held-out songs they reproduce about three quarters of the full level's tiles. The full level
+ * replaces it once made.
  */
 object QuickChart {
-    const val METHOD = "quick-beat-v1"
+    const val METHOD = "quick-distilled-v2"
     private const val FPS = 50
     private const val SILENT = .0008f
-    private val patterns = arrayOf(
-        intArrayOf(0, 2, 1, 3, 0, 3, 1, 2),
-        intArrayOf(1, 2, 0, 3, 1, 3, 0, 2),
-        intArrayOf(0, 3, 1, 2, 1, 3, 0, 2),
-        intArrayOf(1, 3, 0, 2, 0, 3, 1, 2),
-    )
+    /** Candidates scoring at least this become tiles, strongest first, at least [GAP] apart. */
+    private const val THRESHOLD = .4
+    private const val GAP = .17
+    private const val CHORD = .3
+    private const val HOLD_MIN = .4
+    private const val HOLD_LEVEL = .5
+    private const val HOLD_SAME = .93
+    private val BANDS = arrayOf(0 to 10, 10 to 25, 25 to 45, 45 to 70, 70 to 100, 100 to 128)
 
-    fun generate(features: MusicFeatures, detected: MusicalRhythm, seed: Int): Chart {
+    // Trained on the chart benchmark's 22 songs (artifacts/chart-eval-tools/distil.py). Features,
+    // in order: onset strength, its six bands, beat, eighth, sixteenth, downbeat, bar loudness,
+    // loudness within the bar, beat length, and how much the onset stands out from its neighbours.
+    private val MEAN = doubleArrayOf(1.06546, 1.01101, 1.01101, 0.99682, 1.02515, 1.07711, 1.26237, 0.24965, 0.250098,
+        0.500252, 0.078996, 0.501383, 0.00604347, 0.56479, -0.150562, 0.00128532, 0.00166516)
+    private val SCALE = doubleArrayOf(0.381139, 0.418408, 0.348897, 0.354063, 0.371398, 0.438827, 0.583906, 0.43281,
+        0.433069, 0.5, 0.269733, 0.279357, 0.320187, 0.171124, 0.534122, 0.527376, 0.526168)
+    private val NOTE = doubleArrayOf(0.257652, 0.336168, 0.0752557, -0.00668922, -0.0144738, -0.0215224, 0.17217,
+        0.381399, 0.10382, -0.42007, 0.0746486, 0.291203, 0.325069, 0.290928, 0.232174, 0.325836, 0.225171, 0.144587)
+    private val CHORDS = doubleArrayOf(-0.561071, 0.162079, 0.196192, -0.161877, 0.0616107, 0.109073, 0.280514, 0.381143,
+        -0.121211, -0.224939, 0.0396078, 0.533732, 0.468104, 0.256247, 0.800546, -0.214538, 0.325003, -3.07002)
+
+    private class Candidate(val time: Double, val frame: Int, val features: DoubleArray) {
+        var tile = 0.0
+        var chord = 0.0
+    }
+
+    fun generate(features: MusicFeatures, detected: MusicalRhythm): Chart {
         val rhythm = detected.forGameplay()
         val beats = rhythm.beats
         require(beats.size >= 4) { "This recording has no clear rhythm to create a level. Try another song." }
-        val flux = onsets(features)
-        fun frame(time: Double) = (time * FPS).roundToInt().coerceIn(0, features.frames - 1)
-        // The strongest attack within 40 ms, since a beat and its onset rarely share a frame.
-        fun hit(time: Double) = (frame(time) - 2..frame(time) + 2).maxOf { flux[it.coerceIn(0, flux.lastIndex)] }
-        fun loud(time: Double) = features.energy[frame(time)]
-        // What counts as a strong or weak attack is relative to this song's own beats.
-        val beatHits = beats.map(::hit).sorted()
-        val strong = beatHits[beatHits.size * 3 / 4]
-        val weak = beatHits[beatHits.size / 4]
+        val duration = features.duration
+        val total = rise(features, 0, MusicFeatures.BINS)
+        val strength = relative(total)
+        val bands = BANDS.map { (from, to) -> relative(rise(features, from, to)) }
         val downbeats = rhythm.downbeats.takeIf { it.size >= 2 } ?: beats.filterIndexed { i, _ -> i % 4 == 0 }.toDoubleArray()
         val downbeatSet = downbeats.toHashSet()
         val intensity = barIntensity(features, downbeats)
-        fun barOf(time: Double) = (downbeats.indexOfLast { it <= time }).coerceAtLeast(0)
+        val energy = features.energy
 
-        val notes = ArrayList<Chart.Note>()
-        var step = 0
-        var holdUntil = -1.0
-        var lastHold = -100.0
-        var lastChord = -100.0
-        for ((k, time) in beats.withIndex()) {
-            val period = (beats.getOrElse(k + 1) { time + 60 / rhythm.bpm } - time).coerceIn(.25, 1.5)
-            if (time < 1.0 || time > features.duration - .8 || time < holdUntil || loud(time) < SILENT) continue
-            val bar = barOf(time)
-            val level = intensity[bar]
-            if (level < .08) continue
-            val pattern = patterns[(seed + bar / 2).mod(patterns.size)]
-            val lane = pattern[step++ % pattern.size]
-            val downbeat = time in downbeatSet
-            // A downbeat followed by quiet beats that still ring becomes a hold, now and then.
-            val length = minOf(period * 2 - .25, 1.6)
-            if (downbeat && level >= .3 && length >= .5 && time - lastHold > period * 16 &&
-                hit(time + period) < weak && hit(time + 2 * period) < weak * 1.2 && loud(time + period * 1.5) > loud(time) * .5) {
-                notes.add(Chart.Note(time, lane, "hold", length))
-                holdUntil = time + length + .2
-                lastHold = time
-                continue
+        val candidates = ArrayList<Candidate>()
+        for (k in 0 until beats.size - 1) {
+            val start = beats[k]
+            val span = beats[k + 1] - start
+            if (span !in .22..1.6) continue
+            val bar = (downbeats.count { it < start + 1e-6 } - 1).coerceAtLeast(0)
+            val barFrom = (downbeats[bar] * FPS).toInt().coerceIn(0, features.frames - 1)
+            val barTo = ((downbeats.getOrElse(bar + 1) { duration }) * FPS).toInt().coerceIn(barFrom + 1, features.frames)
+            val barEnergy = (barFrom until barTo).sumOf { energy[it].toDouble() } / (barTo - barFrom) + 1e-6
+            for (part in 0 until 4) {
+                val time = start + span * part / 4
+                val f = (time * FPS).roundToInt()
+                if (f - 2 < 0 || f + 2 >= strength.size) continue
+                if (time < 1.0 || time > duration - .8 || energy[f] < SILENT) continue
+                var peak = f - 2
+                for (i in f - 1..f + 2) if (strength[i] > strength[peak]) peak = i
+                val row = DoubleArray(17)
+                row[0] = ln1p(strength[peak])
+                for ((b, band) in bands.withIndex()) row[1 + b] = ln1p((f - 2..f + 2).maxOf { band[it] })
+                row[7] = if (part == 0) 1.0 else 0.0
+                row[8] = if (part == 2) 1.0 else 0.0
+                row[9] = if (part % 2 == 1) 1.0 else 0.0
+                row[10] = if (part == 0 && start in downbeatSet) 1.0 else 0.0
+                row[11] = intensity.getOrElse(bar) { .5 }
+                row[12] = ln(energy[f] / barEnergy + 1e-3)
+                row[13] = span
+                candidates.add(Candidate(peakTime(total, peak), f, row))
             }
-            notes.add(Chart.Note(time, lane))
-            if (downbeat && level >= .75 && hit(time) >= strong && time - lastChord >= period * 8) {
-                notes.add(Chart.Note(time, if (lane < 2) 2 + step % 2 else step % 2))
-                lastChord = time
-            }
-            val half = time + period / 2
-            if (level >= .55 && period / 2 >= .21 && half < features.duration - .8 && hit(half) >= strong)
-                notes.add(Chart.Note(half, pattern[step++ % pattern.size]))
         }
-        val rounded = notes.map { it.copy(time = Math.round(it.time * 1000) / 1000.0, duration = Math.round(it.duration * 1000) / 1000.0) }
-        return ChartStructure.describe(features, detected, ThumbChart.makePlayable(rounded), METHOD)
+        // How much each candidate stands out from the ones beside it.
+        for ((i, c) in candidates.withIndex()) {
+            val here = c.features[0]
+            val before = candidates.getOrNull(i - 1)?.features?.get(0) ?: 0.0
+            val after = candidates.getOrNull(i + 1)?.features?.get(0) ?: 0.0
+            c.features[14] = here - maxOf(before, after)
+            c.features[15] = here - before
+            c.features[16] = here - after
+            c.tile = score(c.features, NOTE)
+            c.chord = score(c.features, CHORDS)
+        }
+
+        // The likeliest tiles first, each at least GAP from the ones already taken.
+        val taken = ArrayList<Candidate>()
+        for (c in candidates.sortedByDescending { it.tile }) {
+            if (c.tile < THRESHOLD) break
+            if (taken.none { abs(it.time - c.time) < GAP }) taken.add(c)
+        }
+        taken.sortBy { it.time }
+        val notes = ArrayList<Chart.Note>()
+        var side = 0
+        var pitch = -1
+        for ((i, c) in taken.withIndex()) {
+            if (c.time < 1.0 || c.time > duration - .8) continue
+            // Hands take turns; within a hand, the tile moves the way the melody goes.
+            val now = pitchClass(features, c.frame)
+            if (pitch >= 0 && now != pitch) side = if (((now - pitch + 18) % 12) - 6 > 0) 1 else 0
+            pitch = now
+            val hand = i % 2
+            val lane = hand * 2 + side
+            // A hold lasts until this hand's next tile; the other hand plays on meanwhile.
+            val next = taken.getOrNull(i + 2)?.time ?: duration
+            val hold = holdLength(features, c.time, next)
+            when {
+                hold > 0 -> notes.add(Chart.Note(round(c.time), lane, "hold", round(hold)))
+                else -> {
+                    notes.add(Chart.Note(round(c.time), lane))
+                    if (c.chord > CHORD) notes.add(Chart.Note(round(c.time), (1 - hand) * 2 + (1 - side)))
+                }
+            }
+        }
+        return ChartStructure.describe(features, detected, ThumbChart.makePlayable(notes), METHOD)
     }
 
-    /** How much the sound rises from each frame to the next: high where notes and drums start. */
-    private fun onsets(features: MusicFeatures): FloatArray {
-        val bins = MusicFeatures.BINS
-        val flux = FloatArray(features.frames)
-        for (f in 1 until features.frames) {
-            var sum = 0f
-            for (b in 0 until bins) {
-                val rise = features.mel[f * bins + b] - features.mel[(f - 1) * bins + b]
-                if (rise > 0) sum += rise
-            }
-            flux[f] = sum
+    /**
+     * A tile becomes a hold when what it starts rings on: the harmony stays the same and the sound
+     * doesn't fade before the hand's next tile, as the full levels do now and then.
+     */
+    private fun holdLength(features: MusicFeatures, time: Double, next: Double): Double {
+        val length = minOf(next - time - .25, 1.6)
+        if (length < HOLD_MIN) return 0.0
+        val start = ((time + .06) * FPS).toInt().coerceAtMost(features.frames - 1)
+        val level = features.energy[start]
+        for (step in 1..5) {
+            val f = ((time + .06 + (length - .06) * step / 5) * FPS).toInt().coerceAtMost(features.frames - 1)
+            if (features.energy[f] < level * HOLD_LEVEL || similarity(features, start, f) < HOLD_SAME) return 0.0
         }
-        return flux
+        return length
+    }
+
+    private fun similarity(features: MusicFeatures, a: Int, b: Int): Double {
+        var dot = 0.0
+        var aa = 0.0
+        var bb = 0.0
+        for (p in 0 until 12) {
+            val x = features.chroma[a * 12 + p].toDouble()
+            val y = features.chroma[b * 12 + p].toDouble()
+            dot += x * y; aa += x * x; bb += y * y
+        }
+        return if (aa * bb > 1e-12) dot / kotlin.math.sqrt(aa * bb) else 0.0
+    }
+
+    private fun score(row: DoubleArray, weights: DoubleArray): Double {
+        var sum = weights.last()
+        for (i in row.indices) sum += (row[i] - MEAN[i]) / SCALE[i] * weights[i]
+        return 1 / (1 + kotlin.math.exp(-sum))
+    }
+
+    /** How much the sound rises from each frame to the next in mel bins [from, to). */
+    private fun rise(features: MusicFeatures, from: Int, to: Int): DoubleArray {
+        val bins = MusicFeatures.BINS
+        val out = DoubleArray(features.frames)
+        for (f in 1 until features.frames) {
+            var sum = 0.0
+            for (b in from until to) {
+                val up = features.mel[f * bins + b] - features.mel[(f - 1) * bins + b]
+                if (up > 0) sum += up
+            }
+            out[f] = sum
+        }
+        return out
+    }
+
+    /** [values] against the 75th percentile of the six seconds around them, so quiet songs count too. */
+    private fun relative(values: DoubleArray): DoubleArray {
+        val out = DoubleArray(values.size)
+        val block = 25
+        val radius = 150
+        for (start in values.indices step block) {
+            val window = values.copyOfRange(maxOf(0, start - radius), minOf(values.size, start + block + radius)).sorted()
+            val position = .75 * (window.size - 1)
+            val low = floor(position).toInt()
+            val reference = window[low] + (window[minOf(low + 1, window.lastIndex)] - window[low]) * (position - low) + 1e-6
+            for (i in start until minOf(values.size, start + block)) out[i] = values[i] / reference
+        }
+        return out
+    }
+
+    /** The peak's time within its 20 ms frame. */
+    private fun peakTime(curve: DoubleArray, i: Int): Double {
+        if (i > 0 && i < curve.lastIndex) {
+            val a = curve[i - 1]
+            val b = curve[i]
+            val c = curve[i + 1]
+            val curvature = a - 2 * b + c
+            if (curvature < 0) return (i + .5 * (a - c) / curvature) / FPS
+        }
+        return i.toDouble() / FPS
+    }
+
+    private fun pitchClass(features: MusicFeatures, frame: Int): Int {
+        var best = 0
+        for (p in 1 until 12) if (features.chroma[frame * 12 + p] > features.chroma[frame * 12 + best]) best = p
+        return best
     }
 
     /** Each bar's loudness among the song's bars, 0–1; near-silent bars get 0. */
@@ -102,4 +226,6 @@ object QuickChart {
             else (energy.count { it < energy[i] * .98 } + .5 * energy.count { abs(it - energy[i]) <= energy[i] * .02 }) / energy.size
         }
     }
+
+    private fun round(time: Double) = Math.round(time * 1000) / 1000.0
 }
