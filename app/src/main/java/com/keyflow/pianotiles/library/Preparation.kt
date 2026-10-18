@@ -51,7 +51,7 @@ object Preparation {
     fun wake(context: Context) {
         val app = context.applicationContext
         planner.execute {
-            if (runCatching { nextDownload(app) != null || nextLevel(app) != null }.getOrDefault(false)) start(app)
+            if (runCatching { nextQuick(app) != null || nextDownload(app) != null || nextLevel(app) != null }.getOrDefault(false)) start(app)
         }
     }
 
@@ -130,10 +130,34 @@ object Preparation {
     }
 
     /**
+     * A downloaded song that can't be played yet. A quick level makes it playable in seconds, so
+     * nothing waits for the full level, which replaces it later when full levels are on. Songs
+     * the plan wants come first, then every other downloaded song, as extras. Download ahead,
+     * Download all and the extras wait for a charger when the player asked for that.
+     */
+    fun nextQuick(context: Context, skip: Set<String> = emptySet()): PreparationPlan.Item? {
+        val inputs = inputs(context)
+        val big = bigLevelsWaitFor(context) == null
+        val wanted = PreparationPlan.wanted(inputs)
+        val extras = if (!big) emptySequence() else inputs.playlists.asSequence().flatMap { playlist ->
+            val songs = playlist.getJSONArray("songs")
+            (0 until songs.length()).asSequence().map {
+                PreparationPlan.Item(playlist.optString("id"), songs.getJSONObject(it), PreparationPlan.Reason.ALL)
+            }
+        }
+        return (wanted.asSequence() + extras).firstOrNull {
+            it.id !in skip && inputs.downloaded(it.song) && !inputs.ready(it.song) &&
+                (big || !PreparationPlan.big(it.reason)) &&
+                (it.reason == PreparationPlan.Reason.WAITING || !PreparationPlan.recentlyFailed(it.song, inputs.now))
+        }
+    }
+
+    /**
      * The next downloaded song to make a full level for, or null when none is waiting. Download
      * ahead and Download all wait for a charger when the player asked for that.
      */
     fun nextLevel(context: Context, skip: Set<String> = emptySet()): PreparationPlan.Item? {
+        if (!fullLevels(context)) return null
         val inputs = inputs(context)
         val big = bigLevelsWaitFor(context) == null
         return PreparationPlan.toPrepare(PreparationPlan.wanted(inputs), inputs)
@@ -145,7 +169,11 @@ object Preparation {
      * ahead. Wi-Fi holds back their downloads, a charger also the making of their levels.
      */
     const val WIFI_ONLY = "downloads.wifiOnly"
+    /** Whether the chart model makes full levels to replace the quick ones; on by default. */
+    const val FULL_LEVELS = "levels.full"
     const val CHARGING_ONLY = "downloads.chargingOnly"
+
+    fun fullLevels(context: Context) = LibraryStore(context).prefs.getBoolean(FULL_LEVELS, true)
 
     /** What downloads for Download ahead and Download all wait for, or null when they may run. */
     fun bigDownloadsWaitFor(context: Context): String? {
@@ -195,9 +223,12 @@ object Preparation {
                 next == null || inputs.ready(next) -> Readiness.Ready
                 PreparationPlan.recentlyFailed(next, now) -> Readiness.Failed
                 !inputs.downloaded(next) && !queues.online -> Readiness.Offline
+                // Playable once it is downloaded and has its quick level, which comes right after.
                 else -> {
                     val downloaded = inputs.downloaded(next)
-                    Readiness.Waiting(queues.schedule.prepared[next.optString("id")] ?: time.estimate(next, downloaded), downloaded)
+                    val wait = if (downloaded) PreparationTime.QUICK_MS
+                        else queues.schedule.downloaded[next.optString("id")] ?: (time.downloadMs + PreparationTime.QUICK_MS)
+                    Readiness.Waiting(wait, downloaded)
                 }
             }
         }
@@ -230,6 +261,8 @@ object Preparation {
     class Queues(
         val downloads: List<Queued>,
         val levels: List<Queued>,
+        /** Whether the chart model makes full levels; without them, quick levels are kept. */
+        val fullLevels: Boolean,
         val schedule: PreparationTime.Schedule,
         internal val inputs: PreparationPlan.Inputs,
         internal val online: Boolean,
@@ -269,12 +302,16 @@ object Preparation {
         val download = downloading
         val level = making
         val toDownload = wanted.filter { !inputs.downloaded(it.song) }.sortedByDescending { it.id == download?.songId }
-        val toPrepare = wanted.filter { !inputs.prepared(it.song) }.sortedByDescending { it.id == level?.songId }
+        // With full levels off, quick levels are all there is to make.
+        val full = fullLevels(context)
+        val toPrepare = if (!full) emptyList() else wanted.filter { !inputs.prepared(it.song) }.sortedByDescending { it.id == level?.songId }
         val downloadHeld = toDownload.associate { it.id to held(it, download = true) }
         val levelHeld = toPrepare.associate { it.id to held(it, download = false) }
         val schedule = PreparationTime.schedule(
+            // Each download is followed by its song's quick level on the same worker.
             toDownload.filter { downloadHeld[it.id] == null }.map { item ->
-                PreparationTime.Job(item.id, progress(item, download)?.let { time.downloadLeft(it.second) } ?: time.downloadMs)
+                PreparationTime.Job(item.id, (progress(item, download)?.let { time.downloadLeft(it.second) } ?: time.downloadMs) +
+                    PreparationTime.QUICK_MS)
             },
             // A level can be made once its song is downloaded or on its way.
             toPrepare.filter { levelHeld[it.id] == null && (inputs.downloaded(it.song) || downloadHeld[it.id] == null) }.map { item ->
@@ -301,7 +338,7 @@ object Preparation {
             })
         }
         return Queues(downloads.sortedBy { it.state is QueueState.Held }, levels.sortedBy { it.state is QueueState.Held },
-            schedule, inputs, online)
+            full, schedule, inputs, online)
     }
 
     /** "about 3 min" style wording for a wait. */

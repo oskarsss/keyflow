@@ -132,4 +132,33 @@ class PreparationTest {
         store.chartFile(locked).writeText("{}")
         assertTrue(Preparation.queues(context).levels.isEmpty())
     }
+
+    @Test
+    fun everyDownloadedSongGetsAQuickLevelAndFullLevelsCanBeTurnedOff() {
+        val library = OnDeviceLibrary.get(context)
+        val raw = JSONObject().put("title", "Mix").put("entries", JSONArray((0 until 12).map {
+            JSONObject().put("id", "songid%05d".format(it)).put("title", "Song $it")
+        }))
+        store.save(library.createPlaylist(raw, Random(3)))
+        val wanted = PreparationPlan.wanted(Preparation.inputs(context))
+        val next = wanted.first { it.reason == Reason.NEXT }
+        val arcade = wanted.first { it.reason == Reason.ARCADE }
+        assertNull(Preparation.nextQuick(context))
+        // Downloaded songs get a quick level, the next level and Arcade alike.
+        store.audioFile(next.song).writeText("audio")
+        assertEquals(next.id, Preparation.nextQuick(context)?.id)
+        store.audioFile(arcade.song).writeText("audio")
+        assertEquals(arcade.id, Preparation.nextQuick(context, setOf(next.id))?.id)
+        // Once it can be played, the full level is what's left, in the level worker's queue.
+        store.quickChartFile(arcade.song).writeText("{}")
+        assertEquals(next.id, Preparation.nextQuick(context)?.id)
+        assertTrue(Preparation.queues(context).levels.any { it.item.id == arcade.id && it.quick })
+        // Without full levels, quick ones are all the level worker would make, and it makes none.
+        store.prefs.edit().putBoolean(Preparation.FULL_LEVELS, false).apply()
+        assertNull(Preparation.nextLevel(context))
+        val queues = Preparation.queues(context)
+        assertFalse(queues.fullLevels)
+        assertTrue(queues.levels.isEmpty())
+        assertEquals(next.id, Preparation.nextQuick(context)?.id)
+    }
 }

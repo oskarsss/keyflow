@@ -196,6 +196,19 @@ private fun MainActivity.addHero(body: LinearLayout, index: Int, song: JSONObjec
     )
     ui.gap(label, 4)
     label.addView(ui.oneLine(ui.text(song.optString("artist"), 13.5f, Palette.MUTED)))
+    val quick = ui.row().apply {
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(6), dp(8), dp(6))
+        ui.pressable(this, null, 10)
+        contentDescription = "Quick level, full level on the way. Show details"
+        visibility = if (song.optString("id") in quickSongs) View.VISIBLE else View.GONE
+        setOnClickListener { showQuickLevel(song) }
+        addView(ui.icon(Glyph.Kind.QUICK, Palette.SKY, 14))
+        ui.gap(this, 6)
+        addView(ui.text("Quick level · full one on the way", 12.5f, Palette.SKY))
+    }
+    label.addView(quick, LinearLayout.LayoutParams(-2, -2))
+    heroQuick = song.optString("id") to quick
     if (store.score(song) > 0) {
         ui.gap(label, 8)
         label.addView(ui.text(String.format(Locale.US, "Best %,d", store.score(song)), 12.5f, Palette.MUTED))
@@ -430,6 +443,23 @@ private fun MainActivity.addNode(
         leftMargin = (cx + size / 2 - dp(24)).toInt()
         topMargin = (cy + size / 2 - dp(24)).toInt()
     })
+    // A quick level's badge sits on the node's upper left edge, with a finger-sized touch area.
+    val quick = FrameLayout(this).apply {
+        contentDescription = "Level ${index + 1} plays as a quick level for now. Show details"
+        setOnClickListener { showQuickLevel(song) }
+        addView(ui.icon(Glyph.Kind.QUICK, Palette.SKY, 16).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Palette.SURFACE_HI)
+                setStroke(dp(2), Palette.BG)
+            }
+        }, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
+    }
+    val corner = size / 2 * .7f
+    map.addView(quick, FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+        leftMargin = (cx - corner - dp(22)).toInt()
+        topMargin = (cy - corner - dp(22)).toInt()
+    })
     if (done)
         map.addView(
             ui.stars(stars, 15, 1, Palette.FAINT),
@@ -458,7 +488,7 @@ private fun MainActivity.addNode(
         leftMargin = if (onRight) (cx + size / 2 + gap).toInt() else 0
         topMargin = (cy - dp(20)).toInt()
     })
-    val row = SongRow(index, subtitle, badge)
+    val row = SongRow(index, subtitle, badge, quick)
     rows[song.optString("id")] = row
     bindRow(row, song)
 }
@@ -470,6 +500,7 @@ private fun MainActivity.bindRow(row: SongRow, song: JSONObject) {
     val length = if (secs > 150 && store.prefs.getBoolean("shortLevels", true)) "Highlights · ≤2:30"
         else if (secs > 0) String.format(Locale.US, "%d:%02d", secs / 60, secs % 60) else ""
     row.subtitle.text = listOf(song.optString("artist"), length).filter { it.isNotBlank() }.joinToString(" · ")
+    row.quick.visibility = if (unlocked && song.optString("id") in quickSongs) View.VISIBLE else View.GONE
     row.trailing.removeAllViews()
     if (unlocked && !store.completed(song)) {
         row.trailing.background = GradientDrawable().apply {
@@ -503,7 +534,9 @@ private fun MainActivity.pollLibrary() {
     if (checkHero) heroCheckedAt = android.os.SystemClock.elapsedRealtime()
     // Songs that failed are tried again once their wait is over, while the player looks on.
     if (++polls % 30 == 0) Preparation.wake(this)
+    val songs = store.songs()
     io.execute {
+        val quick = quickLevelSongs(songs)
         val readiness = if (checkHero) runCatching { Preparation.readiness(this)[id] }.getOrNull() else null
         val revision = library.revision(id)
         val playlist = if (revision == seen) null else library.snapshot(id)
@@ -513,6 +546,7 @@ private fun MainActivity.pollLibrary() {
             polling = false
             if (screen != Screen.HOME || isDestroyed) return@post
             if (store.playlist?.optString("id") == id) readiness?.let(::showHeroReadiness)
+            if (quick != quickSongs) showQuickBadges(quick)
             if (store.playlist?.optString("id") != id || playlist == null || texts == null) {
                 startPolling()
                 return@post
@@ -535,6 +569,61 @@ private fun MainActivity.pollLibrary() {
             startPolling()
         }
     }
+}
+
+/** Songs that play with a quick level while their full level is still to be made. */
+private fun MainActivity.quickLevelSongs(songs: org.json.JSONArray): Set<String> {
+    if (!Preparation.fullLevels(this)) return emptySet()
+    val files = store.files()
+    return (0 until songs.length()).map(songs::getJSONObject).filter(files::quick).map { it.optString("id") }.toSet()
+}
+
+private fun MainActivity.showQuickBadges(quick: Set<String>) {
+    quickSongs = quick
+    for ((id, row) in rows) row.quick.visibility = if (id in quick && store.unlocked(row.index)) View.VISIBLE else View.GONE
+    heroQuick?.let { (id, view) -> view.visibility = if (id in quick) View.VISIBLE else View.GONE }
+}
+
+/**
+ * What a quick level is, how far its full level has got, kept current while open, and where full
+ * levels can be turned off.
+ */
+internal fun MainActivity.showQuickLevel(song: JSONObject) {
+    val about = "This song plays now with a quick level, made from its beat in seconds once it downloaded. " +
+        "It has most of the notes, but the full level follows the music more closely.\n\n" +
+        "The full level is made on this phone and takes a few minutes. When it's ready it replaces the quick one " +
+        "by itself, from your next play.\n\n"
+    val off = "\n\nFull levels are the higher quality tiling: their tiles land on the notes you hear, with chords and " +
+        "holds where the music has them. If quick levels are enough for you, turn off Make full levels in Settings " +
+        "to save battery; songs then keep their quick levels."
+    val dialog = android.app.AlertDialog.Builder(this)
+        .setTitle("Quick level")
+        .setMessage(about + "Full level: checking…" + off)
+        .setPositiveButton("OK", null)
+        .setNeutralButton("Settings") { _, _ -> showSettings() }
+        .show()
+    val id = song.optString("id")
+    fun refresh() {
+        if (!dialog.isShowing || isDestroyed) return
+        io.execute {
+            val progress = runCatching { fullLevelProgress(id) }.getOrDefault("checking…")
+            handler.post {
+                if (!dialog.isShowing || isDestroyed) return@post
+                dialog.setMessage(about + "Full level: " + progress + off)
+                handler.postDelayed(::refresh, 2000)
+            }
+        }
+    }
+    refresh()
+}
+
+/** Where a song's full level has got, said for the quick-level dialog. Disk work. */
+private fun MainActivity.fullLevelProgress(id: String): String {
+    val song = (0 until store.songs().length()).map(store.songs()::getJSONObject).firstOrNull { it.optString("id") == id }
+    if (song != null && store.files().prepared(song)) return "ready, your next play uses it"
+    val queued = Preparation.queues(this).levels.firstOrNull { it.item.id == id } ?: return "made when this level comes up"
+    val state = queued.state
+    return levelStatus(queued) + if (state is Preparation.QueueState.Working) " · ${Preparation.describe(state.leftMs)} left" else ""
 }
 
 /** Dims the next level's button and says when it will be playable, while it isn't ready. */

@@ -9,7 +9,7 @@ import kotlin.math.sin
 class Glyph(private val kind: Kind, color: Int) : Drawable() {
     enum class Kind {
         PLAY, PAUSE, LOCK, CHECK, GEAR, BACK, CHEVRON_DOWN, CHEVRON_RIGHT, PLUS, MINUS,
-        DOWNLOAD, STAR, RETRY, CLOSE, PASTE, MUSIC, ALERT, TRASH, REFRESH, HEART, FLAME, BOLT, EDIT, MORE,
+        DOWNLOAD, STAR, RETRY, CLOSE, PASTE, MUSIC, ALERT, TRASH, REFRESH, HEART, FLAME, BOLT, EDIT, MORE, QUICK,
     }
 
     private val paint =
@@ -189,6 +189,11 @@ class Glyph(private val kind: Kind, color: Int) : Drawable() {
                 path.cubicTo(10f, 9f, 11f, 5f, 12f, 2.5f)
                 path.close()
                 c.drawPath(path, fill())
+            }
+            // Half a disc in a ring: a level that is playable but not yet complete.
+            Kind.QUICK -> {
+                c.drawCircle(12f, 12f, 8.5f, stroke().apply { strokeWidth = 2f })
+                c.drawArc(6.5f, 6.5f, 17.5f, 17.5f, 90f, 180f, true, fill())
             }
             Kind.BOLT -> {
                 path.moveTo(13.5f, 2.5f)

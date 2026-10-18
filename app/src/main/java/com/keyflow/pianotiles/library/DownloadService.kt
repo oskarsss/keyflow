@@ -26,7 +26,11 @@ class DownloadService : Service() {
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastStart = 0
     private lateinit var library: OnDeviceLibrary
-    private val downloads = Lane("song-download", Preparation::nextDownload, ::download, online = true)
+    // Every downloaded song gets a quick level here first: it takes seconds, while the other
+    // worker can be busy with a full level for minutes.
+    private val downloads = Lane("song-download", { context, skip ->
+        Preparation.nextQuick(context, skip) ?: Preparation.nextDownload(context, skip)
+    }, ::fetch, online = true)
     private val levels = Lane("song-level", Preparation::nextLevel, ::makeLevel, online = false)
     @Volatile private var downloadText: String? = null
     @Volatile private var downloadFraction = 0.0
@@ -138,6 +142,28 @@ class DownloadService : Service() {
         stopSelfResult(lastStart)
     }
 
+    /** Makes the song's quick level when its audio is here, and downloads it otherwise. */
+    private fun fetch(item: PreparationPlan.Item): Throwable? =
+        if (LibraryStore(this).downloaded(item.song)) quickLevel(item) else download(item)
+
+    /** Returns why the quick level failed, or null; the full level, if made, comes later. */
+    private fun quickLevel(item: PreparationPlan.Item): Throwable? {
+        android.util.Log.i("Keyflow", "Making a quick level of ${item.id}: ${item.reason}")
+        downloadText = "Making quick levels"
+        downloadFraction = 0.0
+        show()
+        return try {
+            library.quickLevel(item.song)
+            null
+        } catch (error: Throwable) {
+            android.util.Log.w("Keyflow", "Quick level failed", error)
+            runCatching { library.quickLevelFailed(item.playlistId, item.id, error) }
+            error
+        } finally {
+            downloadText = null
+        }
+    }
+
     /** Returns why the download failed, or null. A finished download wakes the other worker. */
     private fun download(item: PreparationPlan.Item): Throwable? {
         val songId = item.id
@@ -178,10 +204,10 @@ class DownloadService : Service() {
         val store = LibraryStore(this)
         // Between steps of the analysis: rest while a game is played, then give way when the player
         // waits for a different song that is downloaded, a playlist's next two levels need this
-        // worker, or Download ahead and Download all must wait for a charger. The plan is read at
-        // most every few seconds.
+        // worker, or Download ahead and Download all must wait for a charger; and stop when the
+        // player turns full levels off. The plan is read at most every few seconds.
         fun shouldYield(): Boolean {
-            if (stopped) return true
+            if (stopped || !Preparation.fullLevels(this)) return true
             if (Preparation.waiting?.second == songId) reason = PreparationPlan.Reason.WAITING
             val resting = SystemClock.elapsedRealtime()
             rest(reason, resting - stepStarted)

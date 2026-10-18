@@ -39,6 +39,7 @@ internal fun MainActivity.page(
     this.screen = screen
     rows.clear()
     hero = null
+    heroQuick = null
     val root = ui.column().apply { background = ui.backdrop() }
     applyInsets(root, true)
     if (bar != null) root.addView(bar, LinearLayout.LayoutParams(-1, dp(64)))

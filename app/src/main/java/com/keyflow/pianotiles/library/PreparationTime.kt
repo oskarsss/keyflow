@@ -47,7 +47,10 @@ class PreparationTime(private val prefs: SharedPreferences) {
     /** A song in one worker's queue and the time that worker still needs for it. */
     class Job(val id: String, val ms: Long)
 
-    /** When each song is downloaded and when it is fully prepared, in milliseconds from now. */
+    /**
+     * When each song is playable, downloaded with its quick level, and when its full level is made,
+     * in milliseconds from now.
+     */
     class Schedule(val downloaded: Map<String, Long>, val prepared: Map<String, Long>)
 
     companion object {
@@ -78,6 +81,9 @@ class PreparationTime(private val prefs: SharedPreferences) {
         private const val CHART_KEY = "preparation.chartMsPerSecond"
         const val DEFAULT_DOWNLOAD_MS = 25_000L
         const val DEFAULT_CHART_MS_PER_SECOND = 240f
+        /** A quick level, made right after its song's download; a couple of seconds on a phone. */
+        const val QUICK_MS = 3_000L
+
         /** Songs whose length the playlist doesn't say count as this long. */
         const val TYPICAL_SECONDS = 210.0
 

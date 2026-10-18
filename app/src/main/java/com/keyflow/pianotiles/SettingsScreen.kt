@@ -119,6 +119,14 @@ internal fun MainActivity.showSettings() {
         }
     }
     divider(downloads)
+    // Every downloaded song gets a quick level in seconds; full levels take minutes each on top.
+    settingRow(downloads, "Make full levels", "Higher quality tiling that follows the music closely, made in minutes per song. Off keeps only quick levels being made") {
+        toggle(Preparation.fullLevels(this), "Make full levels") {
+            prefs.edit().putBoolean(Preparation.FULL_LEVELS, it).apply()
+            Preparation.wake(this)
+        }
+    }
+    divider(downloads)
     settingRow(downloads, "Smart storage management", "Remove songs you haven't played recently") {
         toggle(prefs.getBoolean("smartStorage", true), "Smart storage management") {
             prefs.edit().putBoolean("smartStorage", it).apply()
@@ -133,9 +141,9 @@ internal fun MainActivity.showSettings() {
         }
     }
     divider(downloads)
-    actionRow(downloads, Glyph.Kind.TRASH, "Clear downloaded songs", "Scores and unlocks are kept", Palette.RED) {
+    actionRow(downloads, Glyph.Kind.TRASH, "Clear ALL downloaded songs", "Scores and unlocks are kept", Palette.RED) {
         AlertDialog.Builder(this)
-            .setTitle("Clear downloaded songs?")
+            .setTitle("Clear ALL downloaded songs?")
             .setMessage("Songs will download again when you play them.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Clear") { _, _ ->

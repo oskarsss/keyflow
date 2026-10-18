@@ -27,8 +27,11 @@ internal enum class Screen { WELCOME, IMPORT, WARMUP, HOME, PLAYLISTS, PLAYLIST,
 /** A slice of a song played inside an arcade run. */
 internal class Stage(val startMs: Int, val endMs: Int)
 
-/** A journey row whose subtitle and trailing status update while songs are prepared. */
-internal class SongRow(val index: Int, val subtitle: TextView, val trailing: FrameLayout)
+/**
+ * A journey row whose subtitle, trailing status and quick-level badge update while songs are
+ * prepared.
+ */
+internal class SongRow(val index: Int, val subtitle: TextView, val trailing: FrameLayout, val quick: View)
 
 /**
  * The single activity. It owns the app's state and lifecycle; each screen is built by
@@ -84,6 +87,10 @@ class MainActivity : Activity() {
     /** The next level's button and the line saying when it will be ready, while it isn't. */
     internal var hero: Pair<View, TextView>? = null
     internal var heroCheckedAt = 0L
+    /** The next level's quick-level badge and its song's id. */
+    internal var heroQuick: Pair<String, View>? = null
+    // Songs playing with a quick level while their full level is made; polling keeps it current.
+    internal var quickSongs: Set<String> = emptySet()
     internal var polls = 0
 
     internal val library: OnDeviceLibrary

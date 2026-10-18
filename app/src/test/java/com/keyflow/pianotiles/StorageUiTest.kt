@@ -48,7 +48,8 @@ class StorageUiTest {
             views(activity.window.decorView).first { it.contentDescription == "Settings" }.performClick()
             assertTrue(texts(activity).contains("Smart storage management"))
             assertTrue(texts(activity).contains("Remove unused songs after"))
-            assertTrue(texts(activity).contains("Clear downloaded songs"))
+            assertTrue(texts(activity).contains("Make full levels"))
+            assertTrue(texts(activity).contains("Clear ALL downloaded songs"))
         }
     }
 

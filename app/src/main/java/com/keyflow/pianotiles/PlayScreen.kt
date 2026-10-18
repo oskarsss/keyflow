@@ -101,7 +101,8 @@ internal fun MainActivity.prepareSong(song: JSONObject, index: Int) {
         playQuickLevel(playlistId, song, index, run, status, quick)
     }, LinearLayout.LayoutParams(dp(280), -2))
     ui.gap(quick, 10)
-    quick.addView(ui.text("Made from the beat in seconds. The full level replaces it once it's ready.", 12.5f, Palette.MUTED)
+    quick.addView(ui.text(if (Preparation.fullLevels(this)) "Made from the beat in seconds. The full level replaces it once it's ready."
+        else "Made from the beat in seconds.", 12.5f, Palette.MUTED)
         .apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(280), -2))
     body.addView(quick)
     Preparation.request(this, playlistId, song.optString("id"))

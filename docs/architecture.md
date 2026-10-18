@@ -76,8 +76,10 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    its highlights are cut from, is written to a temporary file and renamed into place, so a song
    counts as ready only when its audio and a level exist. Opening a level reads that file; no
    model runs at play time.
-   **Quick levels.** While a downloaded song's full level is still being made, the loading screen
-   offers *Play now with a quick level*. `QuickChart` treats every sixteenth of the gameplay beat
+   **Quick levels.** Every downloaded song gets a quick level straight away: the download worker
+   makes one after each download, songs the plan wants first and then any other downloaded song
+   of a playlist, so nothing waits for the level worker. The loading screen can also make one on
+   the spot (*Play now with a quick level*). `QuickChart` treats every sixteenth of the gameplay beat
    as a candidate tile and describes it by its onset strength in six mel bands (each against the
    75th percentile of the six seconds around it), its place in the bar, its bar's loudness and
    how much it stands out from its neighbours. Two logistic classifiers distilled from the full
@@ -92,7 +94,11 @@ device. `app/src/androidTest` holds device tests that need the native runtime or
    level managed 43%), and about 79% on songs charted on a phone. When the level worker has
    already found this song's beat, the quick level uses that instead and is ready at once. It is
    saved beside the song and counts as ready everywhere, Arcade included, while the song stays in
-   the level worker's queue; the full level replaces it and deletes it.
+   the level worker's queue; the full level replaces it and deletes it. On the home screen a
+   half-disc badge marks songs playing with a quick level while their full level is to come;
+   tapping it explains the two and follows the full level's progress. *Settings › Make full
+   levels* (on by default) can turn the level worker off: songs then keep their quick levels,
+   and a full level being made stops at its next step.
 4. **Play.** `PlayScreen` builds a `GameSession` from the chart, applies a fresh lane layout and
    decoration, and starts `GameView` on a `MediaPlayer`.
 
@@ -109,7 +115,8 @@ them all.
   next level counts as one of the three, since it is on its way anyway.
 - A playlist whose next level isn't ready is greyed out on the Playlists screen, and its home
   screen dims Play. Both say when it will be playable, from the two workers' schedule, and the
-  home screen offers a quick level once the song is downloaded. `PreparationTime` learns from finished songs how long a download takes on
+  home screen offers a quick level once the song is downloaded. A song counts as playable once
+  its download and the quick level after it are done. `PreparationTime` learns from finished songs how long a download takes on
   this phone and how long charting takes per second of audio, so long songs count for more and a
   kept download counts only its chart.
 - *Settings › Song queues* lists the two workers' queues: songs still to download, and

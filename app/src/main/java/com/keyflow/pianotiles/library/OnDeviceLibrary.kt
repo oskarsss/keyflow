@@ -508,6 +508,9 @@ class OnDeviceLibrary internal constructor(private val context: Context) {
     /** Whether yt-dlp's [message] says YouTube won't serve the song at all, rather than just now. */
     private fun gone(message: String) = UNAVAILABLE.containsMatchIn(message) && !message.contains("try again later", ignoreCase = true)
 
+    /** A quick level that failed waits like any other failure, so it isn't retried every pass. */
+    fun quickLevelFailed(playlistId: String, songId: String, error: Throwable) = failed(playlistId, songId, error, connection = false)
+
     private fun failed(playlistId: String, songId: String, error: Throwable, connection: Boolean) =
         updateSong(playlistId, songId) {
             it.put("status", "error")
