@@ -35,7 +35,7 @@ The pinned official APK digests are:
 - **yt-dlp:** [yt-dlp official nightly 2026.10.10.233141](https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/tag/2026.10.10.233141), Unlicense with bundled dependencies under their own licenses. Bundled executable SHA-256: `f40b6a9e4c5786360953911cab5d2f87507626b8fb7bfee3f8f1c2e5cf341fae`. The executable retains its embedded license/dependency notices; the upstream license is also included in the APK.
 - **Apache Commons Compress 1.27.1** and transitive Commons IO/Lang/Codec: Apache-2.0. [Commons Compress source](https://github.com/apache/commons-compress/tree/rel/commons-compress-1.27.1); license and upstream notices are included in `assets/downloader/licenses/`.
 
-The private release provides Keyflow's complete source and build scripts, while these upstream links identify the corresponding unchanged component sources and build recipes. Downloaded playlist music/artwork is user cache content and is not part of source or release assets.
+Keyflow's complete source and build scripts are published in [its repository](https://github.com/oskarsss/keyflow), and each release attaches a source archive, while these upstream links identify the corresponding unchanged component sources and build recipes. Downloaded playlist music/artwork is user cache content and is not part of source or release assets.
 
 ## Beat This! neural rhythm analysis — MIT
 

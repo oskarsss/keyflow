@@ -1,6 +1,6 @@
 # Keyflow
 
-A native **Kotlin Android** piano-tiles game that turns a YouTube Music playlist into a path of levels. Keyflow imports playlists, downloads audio and generates charts **directly on the phone**, using runtime and request handling adapted from [YTDLnis](https://github.com/deniscerri/ytdlnis). No computer, server or API key is needed.
+A native **Kotlin Android** falling-tiles rhythm game that turns a YouTube Music playlist into a path of levels. Keyflow imports playlists, downloads audio and generates charts **directly on the phone**, using runtime and request handling adapted from [YTDLnis](https://github.com/deniscerri/ytdlnis). No computer, server or API key is needed.
 
 ## Play
 
@@ -21,7 +21,7 @@ Each song has a 20-minute / 100 MB limit. Songs YouTube won't play in your count
 
 ## Install
 
-Download the signed APK from this private repository's [releases](https://github.com/oskarsss/PianoTiles/releases): `keyflow-X.Y.Z.apk` for **ARM64 phones**, or `keyflow-X.Y.Z-x86_64.apk` for **x86-64 emulators**, on Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make each about 160 MiB.
+Download the signed APK from this repository's [releases](https://github.com/oskarsss/keyflow/releases): `keyflow-X.Y.Z.apk` for **ARM64 phones**, or `keyflow-X.Y.Z-x86_64.apk` for **x86-64 emulators**, on Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make each about 160 MiB.
 
 Development releases don't keep data between versions: playlists, downloads, scores and settings may need to be cleared after an update.
 
@@ -51,7 +51,7 @@ Unit tests run on the JVM, with Robolectric for screens. They cover gameplay, ti
 ```bash
 adb shell am instrument -w -r \
   -e playlistUrl 'https://music.youtube.com/playlist?list=PLA2wtd_DK6uw' \
-  com.keyflow.pianotiles.test/androidx.test.runner.AndroidJUnitRunner
+  io.github.oskarsss.keyflow.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 ### Release
@@ -71,4 +71,8 @@ To sign locally, set `KEYFLOW_KEYSTORE`, `KEYFLOW_STORE_PASSWORD` and `KEYFLOW_K
 
 The app is GPL-3.0; see `LICENSE` and `THIRD_PARTY_NOTICES.md` for reused YTDLnis code, native runtime provenance, model licenses and the MIT particle adaptation. License texts ship in the APK, and releases include this project's source archive.
 
-The project is independent of commercial Piano Tiles games. No commercial game's source, branding or audio is included.
+## Disclaimer
+
+Keyflow is an independent project. It is not affiliated with, endorsed by or sponsored by Google, YouTube or YouTube Music, or by the makers or publishers of Piano Tiles or any other commercial game; these names belong to their owners and are used only to describe what Keyflow works with or resembles. No commercial game's source, branding or audio is included.
+
+Keyflow ships no music. You are responsible for having the rights to download and play the audio you import, and for following the terms of the services you use.

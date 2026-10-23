@@ -1,9 +1,8 @@
 # Third-party credits
 
-Keyflow uses two small Kotlin adaptations from [sandeepsj/piano-falling-tiles](https://github.com/sandeepsj/piano-falling-tiles), inspected at commit `3f1fa5e862ac7ca6a583103e3a094e42e493cc94`:
+Keyflow uses a small Kotlin adaptation from [sandeepsj/piano-falling-tiles](https://github.com/sandeepsj/piano-falling-tiles), inspected at commit `3f1fa5e862ac7ca6a583103e3a094e42e493cc94`:
 
-- `engine/TileScheduler.kt` → `TileScheduler.kt`: audio-clock position calculation, adapted to four lanes and the app's header.
-- `rendering/ParticleSystem.kt` → `HitParticles.kt`: fixed particle slots, adapted to Android Canvas and screen density.
+- `rendering/ParticleSystem.kt` → `game/HitParticles.kt`: fixed particle slots, adapted to Android Canvas and screen density.
 
 The game, Android interface, audio charts, and original demo music were created for this project, apart from the adaptations described here. [jatinsachdevame/Piano-Tiles](https://github.com/jatinsachdevame/Piano-Tiles) was reviewed for its lightweight native approach and persistent high scores; no code or audio was copied from it. [atillaturkmen/piano-tiles](https://github.com/atillaturkmen/piano-tiles) was referenced for adjustable speed as a gameplay idea; no code or assets were incorporated from that repository.
 
@@ -36,7 +35,51 @@ The pinned official APK digests are:
 - **yt-dlp:** [yt-dlp official nightly 2026.10.10.233141](https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/tag/2026.10.10.233141), Unlicense with bundled dependencies under their own licenses. Bundled executable SHA-256: `f40b6a9e4c5786360953911cab5d2f87507626b8fb7bfee3f8f1c2e5cf341fae`. The executable retains its embedded license/dependency notices; the upstream license is also included in the APK.
 - **Apache Commons Compress 1.27.1** and transitive Commons IO/Lang/Codec: Apache-2.0. [Commons Compress source](https://github.com/apache/commons-compress/tree/rel/commons-compress-1.27.1); license and upstream notices are included in `assets/downloader/licenses/`.
 
-The private release provides Keyflow's complete source and build scripts, while these upstream links identify the corresponding unchanged component sources and build recipes. Downloaded playlist music/artwork is user cache content and is not part of source or release assets.
+Keyflow's complete source and build scripts are published in [its repository](https://github.com/oskarsss/keyflow), and each release attaches a source archive, while these upstream links identify the corresponding unchanged component sources and build recipes. Downloaded playlist music/artwork is user cache content and is not part of source or release assets.
+
+## Beat This! neural rhythm analysis — MIT
+
+The APK includes the published **final0** Beat This! model by Francesco Foscarin, Jan Schlüter and
+Gerhard Widmer (CPJKU), from [the official project](https://github.com/CPJKU/beat_this).
+The upstream code and published weights are MIT-licensed; the full license is in
+`assets/rhythm/BeatThis-LICENSE.txt`.
+
+The fixed 1500-frame dynamic INT8 ONNX conversion is taken from the publicly documented
+[Orchard model export](https://github.com/SFG5453/Orchard/blob/3ae1ec3e5feeca06e2a9ff2b2197917285526179/mobile/docs/BEAT_MODEL.md),
+revision `3ae1ec3e5feeca06e2a9ff2b2197917285526179`. No Orchard application or export-script code is copied.
+The model weights retain the upstream MIT license. The original published checkpoint, conversion
+provenance, frontend contract, byte count and SHA-256 are recorded in `assets/rhythm/model.json`.
+`tools/prepare_rhythm_model.py --check` verifies the committed asset.
+
+ONNX Runtime Android **1.31.0** executes the model locally, on its CPU provider. It is MIT-licensed;
+[corresponding source](https://github.com/microsoft/onnxruntime/tree/v1.31.0), license and bundled
+third-party notices are included in `assets/rhythm/`. The Kotlin Slaney-mel frontend and minimal
+postprocessor follow the published Beat This! contract; legacy musical phrase selection, temporal-median
+sustain checks and two-thumb safety choreography are original project code.
+
+GTZAN-mini audio and beat annotations are used only as external development evaluation inputs.
+Those audio recordings and the six user-requested evaluation songs are **not** shipped in APKs,
+source archives or repository assets. Only numeric measurement results are committed.
+
+## Mapperatorinator human-trained chart model — MIT
+
+The APK includes the mania (`gamemode=3`) checkpoint of
+[OliBomby/Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini),
+revision `7807f0dc70cab671be012e1f5ddf945b0b8b7278`. Upstream source and pretrained weights are
+MIT-licensed. Copyright OliBomby and contributors; the full license is included in
+`assets/chart/Mapperatorinator-LICENSE.txt`.
+
+The conversion follows [Mapperatorinator source](https://github.com/OliBomby/Mapperatorinator/tree/0e2b0e387aab4b35c64b0b11b12d47578dea7587)
+at revision `0e2b0e387aab4b35c64b0b11b12d47578dea7587`. Keyflow's portable attention implementation,
+ONNX conversion and Kotlin frontend/tokenizer adapter preserve the published model's contracts,
+with explicit cached decoding and a four-key/two-thumb gameplay gate. These are adapted pretrained
+weights; no new Keyflow training or fine-tuning is claimed. The upstream model was trained on
+community-created osu! maps; no training dataset or its music is shipped with Keyflow.
+
+`assets/chart/model.json` records checkpoint provenance, export versions, frontend and file hashes.
+`tools/prepare_chart_model.py --check` verifies the committed graphs and vocabulary. The existing
+MIT-licensed ONNX Runtime Android executes these graphs too. See [chart-learning notes](docs/chart-learning.md)
+for reproducible conversion, measurements and limitations.
 
 ## MIT license — piano-falling-tiles
 

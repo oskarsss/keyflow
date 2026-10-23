@@ -3,10 +3,10 @@ plugins { id("com.android.application") }
 // and x86_64 for emulators. Debug builds hold both in one APK.
 val perAbi = gradle.startParameter.taskNames.any { it.contains("Release") }
 android {
-    namespace = "com.keyflow.pianotiles"
+    namespace = "io.github.oskarsss.keyflow"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.keyflow.pianotiles"
+        applicationId = "io.github.oskarsss.keyflow"
         minSdk = 26
         targetSdk = 35
         versionCode = 18

@@ -5,7 +5,7 @@ and the game draws on a `Canvas`. Everything runs on the phone.
 
 ## Source layout
 
-`app/src/main/java/com/keyflow/pianotiles/`
+`app/src/main/java/io/github/oskarsss/keyflow/`
 
 | Package | What it holds |
 | --- | --- |
