@@ -1,8 +1,53 @@
-# Keyflow
+<p align="center"><img src="docs/images/icon.png" width="128" alt="Keyflow icon"></p>
 
-A native **Kotlin Android** falling-tiles rhythm game that turns a YouTube Music playlist into a path of levels. Keyflow imports playlists, downloads audio and generates charts **directly on the phone**, using runtime and request handling adapted from [YTDLnis](https://github.com/deniscerri/ytdlnis). No computer, server or API key is needed.
+<h1 align="center">Keyflow</h1>
 
-## Play
+<p align="center"><b>A free piano-tiles style rhythm game for Android that turns your own YouTube Music playlist into levels.</b></p>
+
+<p align="center">
+  <a href="https://github.com/oskarsss/keyflow/releases/latest"><img src="https://img.shields.io/github/v/release/oskarsss/keyflow?label=Download%20APK&style=for-the-badge&color=A78BFA" alt="Download the latest APK"></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/gameplay.gif" width="270" alt="Playing a level: tapping tiles, chords and gold tiles to the beat">
+  &nbsp;
+  <img src="docs/images/level-cleared.gif" width="270" alt="Finishing a level with three stars">
+</p>
+
+Tiles fall to the beat of the music, and you tap them as they reach the line. Instead of a fixed song list, you paste a link to any YouTube Music playlist, and every song on it becomes a level, with tiles made from the music itself. Everything happens on your phone: no account, no ads, no computer needed.
+
+## How to start
+
+1. **Download** `keyflow-X.Y.Z.apk` from the [latest release](https://github.com/oskarsss/keyflow/releases/latest) on your Android phone (Android 8.0 or newer).
+2. **Install it.** Open the downloaded file. If your phone asks, allow your browser or file manager to install apps.
+3. **Add a playlist.** In YouTube Music, open a playlist and tap *Share › Copy link*, then paste it into Keyflow. The playlist must be public or unlisted.
+4. **Play.** Your first level is ready in under a minute. Until then, you can warm up with three built-in songs.
+
+<p align="center">
+  <img src="docs/images/welcome.png" width="200" alt="Welcome screen asking for a playlist link">
+  <img src="docs/images/home.png" width="200" alt="Home screen with the next level and Arcade modes">
+  <img src="docs/images/journey.png" width="200" alt="Journey map with locked, blurred levels">
+  <img src="docs/images/settings.png" width="200" alt="Settings">
+</p>
+
+## What you get
+
+- **A journey through your playlist.** Each song is a level on a map. Clear one to unlock the next.
+- **More than just taps.** Hold long tiles, slide along curves, hit chords with two fingers, grab gold tiles and dodge bombs.
+- **Arcade modes.** *Time Attack* and *Endless* mix short parts of the songs you've unlocked.
+- **Stars, combos and streaks.** Score up to three stars per song, build combos and keep a daily streak.
+- **Plays offline.** Once a song is downloaded, you can play it anywhere.
+- **Fits your phone.** Keyflow learns whether your taps land early or late and adjusts the timing for your phone and headphones.
+
+## Good to know
+
+- The app is big, about 160 MB, because the music analysis runs on the phone. Each song you download takes extra space; Settings shows how much and lets you free it.
+- Songs download in the background, by default only on Wi-Fi, except for your next couple of levels.
+- Private playlists and songs that YouTube blocks in your country can't be used.
+- This is still in development: an update may reset your playlists and scores.
+- If downloads stop working, try *Update downloader* in Settings.
+
+## Features in detail
 
 - **First start.** Keyflow asks for a playlist before anything else. While its first levels download and are built, you can warm up with three built-in songs, *The first notes*; a card on their home screen says when your playlist is ready and switches to it.
 - **Playlists.** Paste a public or unlisted playlist link, or share one to Keyflow from YouTube Music. Each import becomes a new local playlist with its songs shuffled once; the order then stays fixed. Downloads, scores and unlocks are shared per song across playlists. Imports of more than 100 songs ask for confirmation, because of storage.
@@ -15,13 +60,13 @@ A native **Kotlin Android** falling-tiles rhythm game that turns a YouTube Music
 - **Quick levels.** Every downloaded song gets a quick level in a couple of seconds from a small model distilled from the full chart model, matching most of its tiles, so you can play it right away. The higher quality full level replaces it once it's ready; a badge marks songs still on their quick level, another marks songs not downloaded yet, and tapping either shows the work step by step with the time left. *Settings › Make full levels* turns full levels off to keep only quick ones.
 - Songs are downloaded and their levels made side by side in a foreground service that keeps the phone awake while it works, so it continues at full speed with the screen off; making levels eases off while you play. Prepared songs play offline. Three original piano pieces ship with the app.
 
-Charts come from the human-chart-trained [Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini) mania model, adapted to run locally and conditioned on beats from [Beat This!](https://github.com/CPJKU/beat_this). See [the chart model](docs/chart-model.md) and [beat tracking](docs/beat-tracking.md).
+Charts come from the human-chart-trained [Mapperatorinator-v32-mini](https://huggingface.co/OliBomby/Mapperatorinator-v32-mini) mania model, adapted to run locally and conditioned on beats from [Beat This!](https://github.com/CPJKU/beat_this). See [the chart model](docs/chart-model.md) and [beat tracking](docs/beat-tracking.md). Downloading uses runtime and request handling adapted from [YTDLnis](https://github.com/deniscerri/ytdlnis).
 
 Each song has a 20-minute / 100 MB limit. Songs YouTube won't play in your country, or at all, are taken out of the playlist with a note saying which. Private playlists that need an account are not supported. Use audio you have permission to download and play. If YouTube blocks requests or changes, retry or use **Update downloader** in Settings, which verifies the official yt-dlp nightly's SHA-256 before installing it, or says the downloader is already up to date.
 
-## Install
+### Which APK
 
-Download the signed APK from this repository's [releases](https://github.com/oskarsss/keyflow/releases): `keyflow-X.Y.Z.apk` for **ARM64 phones**, or `keyflow-X.Y.Z-x86_64.apk` for **x86-64 emulators**, on Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make each about 160 MiB.
+Each [release](https://github.com/oskarsss/keyflow/releases) has `keyflow-X.Y.Z.apk` for **phones** (ARM64) and `keyflow-X.Y.Z-x86_64.apk` for **x86-64 emulators**, both for Android 8.0 (API 26) or newer. The bundled models, Python, FFmpeg and QuickJS make each about 160 MiB.
 
 Development releases don't keep data between versions: playlists, downloads, scores and settings may need to be cleared after an update.
 

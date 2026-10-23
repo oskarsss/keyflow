@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <defs>
+    <clipPath id="mask"><rect x="0" y="0" width="108" height="108" rx="26"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2D2156"/><stop offset="1" stop-color="#110E1D"/></linearGradient>
+    <linearGradient id="tv" x1="0" y1="22" x2="0" y2="40" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#B7A0FF" stop-opacity="0"/><stop offset="1" stop-color="#B7A0FF" stop-opacity="0.28"/></linearGradient>
+    <linearGradient id="tm" x1="0" y1="34" x2="0" y2="54" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#85E8D1" stop-opacity="0"/><stop offset="1" stop-color="#85E8D1" stop-opacity="0.28"/></linearGradient>
+    <linearGradient id="tp" x1="0" y1="16" x2="0" y2="30" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF9ACB" stop-opacity="0"/><stop offset="1" stop-color="#FF9ACB" stop-opacity="0.28"/></linearGradient>
+    <linearGradient id="violet" x1="0" y1="38" x2="0" y2="60" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#D2C4FF"/><stop offset="1" stop-color="#9474FF"/></linearGradient>
+    <linearGradient id="mint" x1="0" y1="52" x2="0" y2="76" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#B8F6E8"/><stop offset="1" stop-color="#3FCBAE"/></linearGradient>
+    <linearGradient id="pink" x1="0" y1="28" x2="0" y2="50" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFC6E1"/><stop offset="1" stop-color="#FF6FB0"/></linearGradient>
+    <radialGradient id="glow" cx="54" cy="77" r="24" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#85E8D1" stop-opacity="0.6"/><stop offset="1" stop-color="#85E8D1" stop-opacity="0"/></radialGradient>
+  </defs>
+  <g clip-path="url(#mask)">
+    <rect width="108" height="108" fill="url(#bg)"/>
+    <g transform="translate(54 54) scale(0.8) translate(-54 -54)">
+      <circle cx="54" cy="77" r="24" fill="url(#glow)"/>
+      <rect x="27" y="22" width="15" height="18" rx="3" fill="url(#tv)"/>
+      <rect x="46.5" y="34" width="15" height="20" rx="3" fill="url(#tm)"/>
+      <rect x="66" y="16" width="15" height="14" rx="3" fill="url(#tp)"/>
+      <rect x="27" y="38" width="15" height="22" rx="4" fill="url(#violet)"/>
+      <rect x="46.5" y="52" width="15" height="24" rx="4" fill="url(#mint)"/>
+      <rect x="66" y="28" width="15" height="22" rx="4" fill="url(#pink)"/>
+      <rect x="21" y="78" width="66" height="3" rx="1.5" fill="#FFFFFF" fill-opacity="0.9"/>
+      <path d="M40,72 l-5,-3 M68,72 l5,-3 M42,86 l-4,3 M66,86 l4,3" stroke="#B8F6E8" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>
